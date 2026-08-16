@@ -18,6 +18,7 @@ import {
   Mail,
   MapPin,
   Menu,
+  Mic,
   Network,
   Plus,
   Search,
@@ -31,15 +32,17 @@ import {
 } from "lucide-react";
 import { isSupabaseConfigured, supabase } from "./supabase.js";
 import LocationPicker from "./LocationPicker.jsx";
+import VoiceFamilyImport from "./VoiceFamilyImport.jsx";
 
 const nav = [
   { id: "home", label: "Overview", icon: LayoutDashboard },
   { id: "family", label: "My family", icon: UsersRound },
+  { id: "voice", label: "Voice import", icon: Mic },
   { id: "tree", label: "Family map", icon: Network },
   { id: "matches", label: "Connections", icon: Sparkles, count: 3 },
 ];
 
-const APP_VERSION = "0.11.1";
+const APP_VERSION = "0.12.0";
 
 const RELATION_OPTIONS = [
   {
@@ -162,6 +165,8 @@ const personFromRow = (row, index = 0, currentUserId = "") => ({
   nickname: row.nickname || "",
   maidenName: row.maiden_name || "",
   birthYear: row.birth_year?.toString() || "",
+  ageReported: row.age_as_reported || null,
+  ageRecordedAt: row.age_recorded_at || null,
   birthLocation: row.birth_location || null,
   livedLocations: row.lived_locations || [],
   birthPlace: row.birth_location?.display || row.birth_place || "",
@@ -484,81 +489,44 @@ function PatchNotes({ close }) {
         <span className="mini-title">VANSH v{APP_VERSION}</span>
         <h2>What’s new</h2>
         <p>
-          Both sides of a married couple now remain connected to their own
-          parents and siblings.
+          Tell Vansh a family story in English, Spanish, or Sindhi and review
+          its interpretation before anything is added to your real family map.
         </p>
         <div className="release-list">
           <div>
+            <Mic />
+            <span>
+              <strong>Voice family import</strong>Record a story, upload audio,
+              or paste a transcript and turn it into a rough family graph.
+            </span>
+          </div>
+          <div>
             <Network />
             <span>
-              <strong>Two ancestral sides</strong>Maternal and paternal
-              grandparents connect independently to the same parent couple.
+              <strong>Interpretation first</strong>People and relationships are
+              shown as a draft map with confidence and source evidence.
             </span>
           </div>
           <div>
-            <BookHeart />
+            <Check />
             <span>
-              <strong>Side-aware siblings</strong>Each parent’s siblings stay
-              beside that parent rather than being detached by the marriage.
-            </span>
-          </div>
-          <div>
-            <UserPlus />
-            <span>
-              <strong>Measured connectors</strong>Lines now join the actual
-              rendered cards instead of relying on one nested branch owner.
+              <strong>Confirm one by one</strong>Review name, age, location,
+              birth place, and the mapped relationship for each person.
             </span>
           </div>
           <div>
             <ShieldCheck />
             <span>
-              <strong>One couple, no duplication</strong>Spouses appear once
-              while preserving incoming family links from both sides.
+              <strong>No silent writes</strong>Only mappings you explicitly
+              confirm are committed to the family tree.
             </span>
           </div>
         </div>
-        <button className="primary" onClick={close}>
+        <button className="primary full-button" onClick={close}>
           Continue
         </button>
       </section>
     </div>
-  );
-}
-
-function Header({ setMenu, query, setQuery, profile, self, signOut }) {
-  const current = self || {
-    initials: profile?.display_name?.slice(0, 2).toUpperCase() || "VF",
-    color: "terracotta",
-  };
-  return (
-    <header>
-      <button className="mobile-menu icon-button" onClick={() => setMenu(true)}>
-        <Menu />
-      </button>
-      <div className="global-search">
-        <Search size={18} />
-        <input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search your people, surnames or places"
-        />
-      </div>
-      <button className="icon-button notification">
-        <Bell size={19} />
-      </button>
-      <div className="header-user">
-        <Avatar person={current} size="small" />
-        <div>
-          <strong>
-            {profile?.display_name?.split(" ")[0] || "Family keeper"}
-          </strong>
-          <span>Private family space</span>
-        </div>
-        <button className="signout" onClick={signOut} title="Sign out">
-          <LogOut size={16} />
-        </button>
-      </div>
-    </header>
   );
 }
 
@@ -576,7 +544,7 @@ function Stat({ icon: Icon, value, label, tone }) {
   );
 }
 
-function Overview({ people, matches, profile, setPage, openAdd }) {
+function Overview({ people, matches, profile, setPage, openAdd, openVoice }) {
   const surnameData = Object.values(
     people
       .flatMap((person) =>
@@ -616,9 +584,14 @@ function Overview({ people, matches, profile, setPage, openAdd }) {
           <h1>Namaste, {profile?.display_name?.split(" ")[0] || "friend"}.</h1>
           <p>Every name you add makes your family's story a little clearer.</p>
         </div>
-        <button className="primary" onClick={openAdd}>
-          <Plus size={18} /> Add family member
-        </button>
+        <div className="welcome-actions">
+          <button className="secondary voice-cta" onClick={openVoice}>
+            <Mic size={17} /> Tell your family story
+          </button>
+          <button className="primary" onClick={openAdd}>
+            <Plus size={18} /> Add family member
+          </button>
+        </div>
       </section>
       <section className="stats">
         <Stat
@@ -826,7 +799,9 @@ function Family({ people, openAdd, editPerson, deletePerson, invitePerson }) {
                 ? "Name, dates and locations have not been identified yet."
                 : person.birthYear
                   ? `Born ${person.birthYear}${person.birthPlace ? ` in ${person.birthPlace}` : ""}`
-                  : "Birth year unknown"}
+                  : person.ageReported
+                    ? `Age ${person.ageReported}${person.livedIn ? ` · ${person.livedIn}` : ""}`
+                    : "Birth year unknown"}
             </p>
             <div className="person-meta">
               <span>
@@ -3008,6 +2983,88 @@ function FamilyApp({ session }) {
       { id: result.data.id, from, to, type, startYear: result.data.start_year },
     ]);
   };
+  const commitVoiceImport = async (draft) => {
+    const narratorDraft = draft.people.find((person) => person.isNarrator);
+    const narrator = people.find((person) => person.id === narratorDraft?.existingId);
+    if (!narrator) throw new Error("The selected narrator is no longer available.");
+
+    const confirmed = draft.people.filter(
+      (person) => !person.isNarrator && person.status === "confirmed",
+    );
+    if (!confirmed.length) throw new Error("Confirm at least one person first.");
+
+    const acceptedIds = new Set([draft.narratorTempId, ...confirmed.map((person) => person.tempId)]);
+    const idMap = new Map([[draft.narratorTempId, narrator.id]]);
+    draft.people.filter((person) => person.existingId).forEach((person) => idMap.set(person.tempId, person.existingId));
+    const inserted = [];
+
+    for (const person of confirmed) {
+      if (person.existingId) continue;
+      const relation = (person.relationToNarrator || "").toLowerCase();
+      const side = relation.includes("maternal") || relation === "mother"
+        ? "Mother's side"
+        : relation.includes("paternal") || relation === "father"
+          ? "Father's side"
+          : narrator.side || "Other";
+      const payload = {
+        owner_id: narrator.ownerId || session.user.id,
+        created_by: session.user.id,
+        first_name: person.isPlaceholder ? "Unknown" : person.firstName?.trim() || "Unknown",
+        surname: person.surname?.trim() || narrator.surname || "Unknown",
+        gender: person.gender || "unspecified",
+        birth_year: person.birthYear ? Number(person.birthYear) : null,
+        birth_place: person.birthLocation?.trim() || null,
+        lived_in: person.location?.trim() || null,
+        family_side: side,
+        is_placeholder: Boolean(person.isPlaceholder),
+        placeholder_label: person.isPlaceholder ? person.placeholderLabel || person.relationToNarrator : null,
+        age_as_reported: person.age ? Number(person.age) : null,
+        age_recorded_at: person.age ? new Date().toISOString().slice(0, 10) : null,
+      };
+      let result = await supabase.from("family_members").insert(payload).select().single();
+      if (result.error && /age_as_reported|age_recorded_at/i.test(result.error.message || "")) {
+        const { age_as_reported, age_recorded_at, ...legacyPayload } = payload;
+        void age_as_reported; void age_recorded_at;
+        result = await supabase.from("family_members").insert(legacyPayload).select().single();
+      }
+      if (result.error) throw result.error;
+      idMap.set(person.tempId, result.data.id);
+      inserted.push(result.data);
+    }
+
+    const seen = new Set(relationships.map((relationship) => {
+      const symmetric = ["sibling", "spouse", "partner"].includes(relationship.type);
+      const pair = symmetric ? [relationship.from, relationship.to].sort().join(":") : `${relationship.from}:${relationship.to}`;
+      return `${relationship.type}:${pair}`;
+    }));
+    const relationshipRows = [];
+    draft.relationships.forEach((relationship) => {
+      if (relationship.status === "rejected" || !acceptedIds.has(relationship.from) || !acceptedIds.has(relationship.to)) return;
+      const from = idMap.get(relationship.from), to = idMap.get(relationship.to);
+      if (!from || !to || from === to) return;
+      const symmetric = ["sibling", "spouse", "partner"].includes(relationship.type);
+      const pair = symmetric ? [from, to].sort().join(":") : `${from}:${to}`;
+      const key = `${relationship.type}:${pair}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      relationshipRows.push({ owner_id: narrator.ownerId || session.user.id, created_by: session.user.id, person_a_id: from, person_b_id: to, relationship_type: relationship.type });
+    });
+
+    let savedRelationships = [];
+    if (relationshipRows.length) {
+      const result = await supabase.from("relationships").insert(relationshipRows).select();
+      if (result.error) throw result.error;
+      savedRelationships = result.data || [];
+    }
+    if (inserted.length) setPeople((current) => [
+      ...current,
+      ...inserted.map((row, index) => personFromRow(row, current.length + index, session.user.id)),
+    ]);
+    if (savedRelationships.length) setRelationships((current) => [
+      ...current,
+      ...savedRelationships.map((relationship) => ({ id: relationship.id, from: relationship.person_a_id, to: relationship.person_b_id, type: relationship.relationship_type, startYear: relationship.start_year })),
+    ]);
+  };
   const deletePerson = async (person) => {
     if (
       !person.canDelete ||
@@ -3108,6 +3165,7 @@ function FamilyApp({ session }) {
             openAdd={() =>
               setAdding(people.find((person) => person.isSelf) || people[0])
             }
+            openVoice={() => setPage("voice")}
           />
         ) : page === "family" ? (
           <Family
@@ -3118,6 +3176,13 @@ function FamilyApp({ session }) {
             editPerson={setEditing}
             deletePerson={deletePerson}
             invitePerson={setInviting}
+          />
+        ) : page === "voice" ? (
+          <VoiceFamilyImport
+            people={people}
+            relationships={relationships}
+            onCommit={commitVoiceImport}
+            onOpenTree={() => setPage("tree")}
           />
         ) : page === "tree" ? (
           <Tree
