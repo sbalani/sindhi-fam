@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { LoaderCircle, MapPin, Search, X } from "lucide-react";
-import { supabase } from "./supabase.js";
+import { searchPlaces } from "./locationService.js";
 
 export default function LocationPicker({
   value,
@@ -15,32 +15,26 @@ export default function LocationPicker({
   const [replacingLegacy, setReplacingLegacy] = useState(!legacyValue);
   const selected = multiple ? value || [] : value ? [value] : [];
 
-  useEffect(() => {
-    if (query.trim().length < 2) return undefined;
-    let active = true;
-    const timer = window.setTimeout(async () => {
-      const { data, error: searchError } = await supabase.functions.invoke(
-        "search-places",
-        { body: { query } },
-      );
-      if (!active) return;
-      setResults(data?.results || []);
-      setError(searchError ? "City search is temporarily unavailable." : "");
-      setSearching(false);
-    }, 300);
-    return () => {
-      active = false;
-      window.clearTimeout(timer);
-    };
-  }, [query]);
-
-  const search = (event) => {
-    const nextQuery = event.target.value;
-    setQuery(nextQuery);
+  const runSearch = async () => {
+    if (query.trim().length < 2) return;
+    setSearching(true);
     setError("");
     setResults([]);
-    setSearching(nextQuery.trim().length >= 2);
+    const found = await searchPlaces(query);
+    setResults(found);
+    if (!found.length)
+      setError(
+        "No matching place found. Start the local voice backend or deploy the included Supabase search-places function, then try a city or country.",
+      );
+    setSearching(false);
   };
+
+  const search = (event) => {
+    setQuery(event.target.value);
+    setError("");
+    setResults([]);
+  };
+
   const choose = (location) => {
     if (multiple) {
       onChange([
@@ -57,10 +51,12 @@ export default function LocationPicker({
     setResults([]);
     setSearching(false);
   };
+
   const remove = (index) =>
     onChange(
       multiple ? selected.filter((_, itemIndex) => itemIndex !== index) : null,
     );
+
   const updateYear = (index, field, year) =>
     onChange(
       selected.map((location, itemIndex) =>
@@ -150,26 +146,39 @@ export default function LocationPicker({
             {replacingLegacy
               ? selected.length
                 ? "Save your changes to complete the replacement."
-                : "Now select the correct city or cities below."
+                : "Now select the correct city or country below."
               : "Tap here to replace this entry."}
           </small>
         </button>
       )}
       {showSearch && (
         <>
-          <div className="location-search">
+          <div className="location-search location-search-submit">
             <Search size={15} />
             <input
               value={query}
               onChange={search}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  runSearch();
+                }
+              }}
               placeholder={
                 multiple && selected.length
-                  ? "Add another city"
-                  : "Search for a city"
+                  ? "Add another city or country"
+                  : "Search for a city or country"
               }
               autoComplete="off"
             />
-            {searching && <LoaderCircle className="spin" size={15} />}
+            <button
+              type="button"
+              onClick={runSearch}
+              disabled={searching || query.trim().length < 2}
+              aria-label="Search places"
+            >
+              {searching ? <LoaderCircle className="spin" size={15} /> : "Find"}
+            </button>
           </div>
           {query.length > 0 && query.trim().length < 2 && (
             <small className="location-hint">Type at least 2 characters.</small>
@@ -185,7 +194,7 @@ export default function LocationPicker({
                 >
                   <MapPin size={15} />
                   <span>
-                    <strong>{location.city}</strong>
+                    <strong>{location.city || location.country}</strong>
                     <small>
                       {[location.region, location.country]
                         .filter(Boolean)
@@ -196,18 +205,10 @@ export default function LocationPicker({
               ))}
             </div>
           )}
-          {query.trim().length >= 2 &&
-            !searching &&
-            !results.length &&
-            !error && (
-              <small className="location-hint">
-                No matching city found. Try a nearby town or alternate spelling.
-              </small>
-            )}
           <small className="selection-rule">
             {multiple
-              ? "Add optional years after selecting a city. Leave To blank if they still live there."
-              : "Only a selected city and country will be saved."}
+              ? "Choose a result so Vansh can save the city/country and map coordinates. Add optional years after selecting it."
+              : "Choose a result so Vansh can save at least the country and, when available, the city and map coordinates."}
           </small>
         </>
       )}

@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
   ArrowRight,
@@ -6,8 +6,9 @@ import {
   BookHeart,
   Check,
   CircleHelp,
+  Fingerprint,
   GitFork,
-  HeartHandshake,
+  Globe2,
   LayoutDashboard,
   Lightbulb,
   Link2,
@@ -17,7 +18,9 @@ import {
   LogOut,
   Mail,
   MapPin,
+  MapPinned,
   Menu,
+  Mic,
   Network,
   Plus,
   Search,
@@ -31,15 +34,22 @@ import {
 } from "lucide-react";
 import { isSupabaseConfigured, supabase } from "./supabase.js";
 import LocationPicker from "./LocationPicker.jsx";
+import VoiceFamilyImport from "./VoiceFamilyImport.jsx";
+import WorldMap from "./WorldMap.jsx";
+import IdentityConnections, { IdentitySuggestionModal, MemberIdentitySuggestionModal, VerificationDrawer } from "./IdentityConnections.jsx";
+import { geocodeOne } from "./locationService.js";
 
 const nav = [
   { id: "home", label: "Overview", icon: LayoutDashboard },
   { id: "family", label: "My family", icon: UsersRound },
+  { id: "voice", label: "Voice import", icon: Mic },
   { id: "tree", label: "Family map", icon: Network },
-  { id: "matches", label: "Connections", icon: Sparkles, count: 3 },
+  { id: "places", label: "Places", icon: MapPinned },
+  { id: "community", label: "Sindhis worldwide", icon: Globe2 },
+  { id: "matches", label: "Connections", icon: Sparkles },
 ];
 
-const APP_VERSION = "0.11.1";
+const APP_VERSION = "0.14.0";
 
 const RELATION_OPTIONS = [
   {
@@ -90,6 +100,14 @@ const RELATION_OPTIONS = [
     gender: "female",
     direction: "symmetric",
   },
+  { value: "half-brother", label: "Half-brother", term: "", type: "sibling", variant: "half", gender: "male", direction: "symmetric" },
+  { value: "half-sister", label: "Half-sister", term: "", type: "sibling", variant: "half", gender: "female", direction: "symmetric" },
+  { value: "stepbrother", label: "Stepbrother", term: "", type: "sibling", variant: "step", gender: "male", direction: "symmetric" },
+  { value: "stepsister", label: "Stepsister", term: "", type: "sibling", variant: "step", gender: "female", direction: "symmetric" },
+  { value: "stepfather", label: "Stepfather", term: "", type: "parent", variant: "step", gender: "male", direction: "to-anchor" },
+  { value: "stepmother", label: "Stepmother", term: "", type: "parent", variant: "step", gender: "female", direction: "to-anchor" },
+  { value: "adoptive-father", label: "Adoptive father", term: "", type: "parent", variant: "adoptive", gender: "male", direction: "to-anchor" },
+  { value: "adoptive-mother", label: "Adoptive mother", term: "", type: "parent", variant: "adoptive", gender: "female", direction: "to-anchor" },
   {
     value: "husband",
     label: "Husband",
@@ -153,6 +171,34 @@ const residencePeriod = (location) => {
 const residenceLabel = (location) =>
   [location.display, residencePeriod(location)].filter(Boolean).join(" · ");
 
+const hasCoordinates = (location) =>
+  location && Number.isFinite(Number(location.lat)) && Number.isFinite(Number(location.lon));
+
+const familyLocationPoints = (people) => {
+  const grouped = new Map();
+  const add = (person, location, kind) => {
+    if (!hasCoordinates(location)) return;
+    const key = `${Number(location.lat).toFixed(4)}:${Number(location.lon).toFixed(4)}`;
+    const current = grouped.get(key) || {
+      lat: Number(location.lat),
+      lon: Number(location.lon),
+      label: location.display || [location.city, location.country].filter(Boolean).join(", "),
+      people: [],
+    };
+    current.people.push(`${person.name} · ${kind}`);
+    grouped.set(key, current);
+  };
+  people.forEach((person) => {
+    add(person, person.birthLocation, "born here");
+    person.livedLocations.forEach((location) => add(person, location, "lived here"));
+  });
+  return [...grouped.values()].map((point) => ({
+    ...point,
+    count: point.people.length,
+    subLabel: point.people.slice(0, 5).join(" · "),
+  }));
+};
+
 const personFromRow = (row, index = 0, currentUserId = "") => ({
   id: row.id,
   firstName: row.is_placeholder
@@ -162,6 +208,10 @@ const personFromRow = (row, index = 0, currentUserId = "") => ({
   nickname: row.nickname || "",
   maidenName: row.maiden_name || "",
   birthYear: row.birth_year?.toString() || "",
+  birthDate: row.birth_date || "",
+  ageReported: row.age_as_reported || null,
+  ageRecordedAt: row.age_recorded_at || null,
+  personIdentityId: row.person_identity_id || null,
   birthLocation: row.birth_location || null,
   livedLocations: row.lived_locations || [],
   birthPlace: row.birth_location?.display || row.birth_place || "",
@@ -187,7 +237,9 @@ const personFromRow = (row, index = 0, currentUserId = "") => ({
     row.linked_user_id === currentUserId ||
     row.filled_by === currentUserId ||
     row.is_placeholder,
-  canDelete: !row.is_self && row.created_by === currentUserId,
+  canDelete:
+    !row.is_self &&
+    (row.created_by === currentUserId || row.owner_id === currentUserId),
   name: row.is_placeholder
     ? row.placeholder_label || "Unknown relative"
     : [row.first_name, row.nickname ? `"${row.nickname}"` : null, row.surname]
@@ -202,9 +254,12 @@ const personFromRow = (row, index = 0, currentUserId = "") => ({
 function AuthScreen() {
   const [mode, setMode] = useState("signup");
   const [form, setForm] = useState({
-    name: "",
+    firstName: "",
     surname: "",
+    birthDate: "",
+    birthLocation: "",
     location: "",
+    discoveryEnabled: false,
     email: "",
     password: "",
   });
@@ -227,9 +282,13 @@ function AuthScreen() {
             options: {
               emailRedirectTo: window.location.origin,
               data: {
-                display_name: form.name,
+                display_name: [form.firstName, form.surname].filter(Boolean).join(" "),
+                first_name: form.firstName,
                 family_surname: form.surname,
-                location: form.location,
+                birth_date: form.birthDate || null,
+                birth_location: form.birthLocation || null,
+                location: form.location || null,
+                discovery_enabled: Boolean(form.discoveryEnabled),
               },
             },
           })
@@ -297,13 +356,13 @@ function AuthScreen() {
           {mode === "signup" && (
             <div className="form-grid">
               <label>
-                Your name
+                Your first name
                 <input
                   required
-                  name="name"
-                  value={form.name}
+                  name="firstName"
+                  value={form.firstName}
                   onChange={update}
-                  placeholder="First and last name"
+                  placeholder="e.g. Soham"
                 />
               </label>
               <label>
@@ -313,7 +372,26 @@ function AuthScreen() {
                   name="surname"
                   value={form.surname}
                   onChange={update}
-                  placeholder="e.g. Advani"
+                  placeholder="e.g. Nanwani"
+                />
+              </label>
+              <label>
+                Date of birth <small>Recommended for matching</small>
+                <input
+                  required
+                  type="date"
+                  name="birthDate"
+                  value={form.birthDate}
+                  onChange={update}
+                />
+              </label>
+              <label>
+                Place of birth <small>Optional</small>
+                <input
+                  name="birthLocation"
+                  value={form.birthLocation}
+                  onChange={update}
+                  placeholder="City or country"
                 />
               </label>
               <label className="wide">
@@ -324,6 +402,18 @@ function AuthScreen() {
                   onChange={update}
                   placeholder="City or country"
                 />
+              </label>
+              <label className="auth-discovery-check wide">
+                <input
+                  type="checkbox"
+                  name="discoveryEnabled"
+                  checked={form.discoveryEnabled}
+                  onChange={(event) => setForm((current) => ({ ...current, discoveryEnabled: event.target.checked }))}
+                />
+                <span>
+                  <strong>Help relatives with my surname find me</strong>
+                  <small>Optional and off by default. They may see your name, birth year and broad location, never your email or full tree.</small>
+                </span>
               </label>
             </div>
           )}
@@ -402,7 +492,7 @@ function Avatar({ person, size = "medium" }) {
   );
 }
 
-function Sidebar({ page, setPage, open, close, people, openNotes }) {
+function Sidebar({ page, setPage, open, close, people, openNotes, connectionCount = 0 }) {
   return (
     <>
       {open && (
@@ -419,20 +509,23 @@ function Sidebar({ page, setPage, open, close, people, openNotes }) {
           </div>
         </div>
         <nav>
-          {nav.map(({ id, label, icon: Icon, count }) => (
-            <button
-              className={page === id ? "active" : ""}
-              onClick={() => {
-                setPage(id);
-                close();
-              }}
-              key={id}
-            >
-              <Icon size={19} />
-              <span>{label}</span>
-              {count && <b>{count}</b>}
-            </button>
-          ))}
+          {nav.map(({ id, label, icon: Icon }) => {
+            const count = id === "matches" ? connectionCount : 0;
+            return (
+              <button
+                className={page === id ? "active" : ""}
+                onClick={() => {
+                  setPage(id);
+                  close();
+                }}
+                key={id}
+              >
+                <Icon size={19} />
+                <span>{label}</span>
+                {count > 0 && <b>{count}</b>}
+              </button>
+            );
+          })}
         </nav>
         <div className="sidebar-note">
           <BookHeart size={20} />
@@ -484,40 +577,35 @@ function PatchNotes({ close }) {
         <span className="mini-title">VANSH v{APP_VERSION}</span>
         <h2>What’s new</h2>
         <p>
-          Both sides of a married couple now remain connected to their own
-          parents and siblings.
+          Vansh now separates suggestions from verification: possible identity overlaps and surname connections require explicit approval from both sides.
         </p>
         <div className="release-list">
           <div>
-            <Network />
+            <Fingerprint />
             <span>
-              <strong>Two ancestral sides</strong>Maternal and paternal
-              grandparents connect independently to the same parent couple.
+              <strong>Mutual identity verification</strong>Strong matches can suggest an existing family record, but the claimant and the person who created that record must both agree.
             </span>
           </div>
           <div>
-            <BookHeart />
+            <UsersRound />
             <span>
-              <strong>Side-aware siblings</strong>Each parent’s siblings stay
-              beside that parent rather than being detached by the marriage.
+              <strong>Opt-in surname discovery</strong>Registered users can choose to be discoverable to people with the same surname using only limited profile clues.
             </span>
           </div>
           <div>
-            <UserPlus />
+            <Bell />
             <span>
-              <strong>Measured connectors</strong>Lines now join the actual
-              rendered cards instead of relying on one nested branch owner.
+              <strong>Verification inbox</strong>Requests appear in the bell menu and Connections page instead of silently changing a family tree.
             </span>
           </div>
           <div>
-            <ShieldCheck />
+            <Mic />
             <span>
-              <strong>One couple, no duplication</strong>Spouses appear once
-              while preserving incoming family links from both sides.
+              <strong>Editable voice relationships</strong>If the interpreter labels a person incorrectly, change the relationship before confirming the mapping.
             </span>
           </div>
         </div>
-        <button className="primary" onClick={close}>
+        <button className="primary full-button" onClick={close}>
           Continue
         </button>
       </section>
@@ -525,7 +613,8 @@ function PatchNotes({ close }) {
   );
 }
 
-function Header({ setMenu, query, setQuery, profile, self, signOut }) {
+
+function Header({ setMenu, query, setQuery, profile, self, signOut, notificationCount = 0, openNotifications }) {
   const current = self || {
     initials: profile?.display_name?.slice(0, 2).toUpperCase() || "VF",
     color: "terracotta",
@@ -543,8 +632,9 @@ function Header({ setMenu, query, setQuery, profile, self, signOut }) {
           placeholder="Search your people, surnames or places"
         />
       </div>
-      <button className="icon-button notification">
+      <button className="icon-button notification" onClick={openNotifications} title="Verification requests">
         <Bell size={19} />
+        {notificationCount > 0 && <b>{notificationCount}</b>}
       </button>
       <div className="header-user">
         <Avatar person={current} size="small" />
@@ -576,7 +666,7 @@ function Stat({ icon: Icon, value, label, tone }) {
   );
 }
 
-function Overview({ people, matches, profile, setPage, openAdd }) {
+function Overview({ people, matches, profile, setPage, openAdd, openVoice }) {
   const surnameData = Object.values(
     people
       .flatMap((person) =>
@@ -608,6 +698,7 @@ function Overview({ people, matches, profile, setPage, openAdd }) {
       ),
     ),
   ];
+  const mapPoints = familyLocationPoints(people);
   return (
     <div className="page">
       <section className="welcome">
@@ -616,9 +707,14 @@ function Overview({ people, matches, profile, setPage, openAdd }) {
           <h1>Namaste, {profile?.display_name?.split(" ")[0] || "friend"}.</h1>
           <p>Every name you add makes your family's story a little clearer.</p>
         </div>
-        <button className="primary" onClick={openAdd}>
-          <Plus size={18} /> Add family member
-        </button>
+        <div className="welcome-actions">
+          <button className="secondary voice-cta" onClick={openVoice}>
+            <Mic size={17} /> Tell your family story
+          </button>
+          <button className="primary" onClick={openAdd}>
+            <Plus size={18} /> Add family member
+          </button>
+        </div>
       </section>
       <section className="stats">
         <Stat
@@ -735,28 +831,36 @@ function Overview({ people, matches, profile, setPage, openAdd }) {
             Explore all surnames <ArrowRight size={15} />
           </button>
         </aside>
-        <section className="panel journey">
-          <div>
-            <span className="mini-title">
-              <MapPin size={14} /> FAMILY JOURNEY
-            </span>
-            <h2>The places in your story</h2>
-            <p>
-              {places.length
-                ? `${places.length} recorded places across your family.`
-                : "Add birthplaces and cities to trace your family journey."}
-            </p>
+        <section className="panel journey journey-map-card">
+          <div className="journey-heading-row">
+            <div>
+              <span className="mini-title">
+                <MapPin size={14} /> FAMILY JOURNEY
+              </span>
+              <h2>The places in your story</h2>
+              <p>
+                {places.length
+                  ? `${places.length} recorded places across your family.`
+                  : "Add birthplaces and cities to trace your family journey."}
+              </p>
+            </div>
+            <button className="text-button" onClick={() => setPage("places")}>
+              Open world map <ArrowRight size={15} />
+            </button>
           </div>
-          <div className="journey-track">
-            {places.slice(0, 4).map((place, index) => (
-              <div key={place}>
-                <i>{index + 1}</i>
-                <strong>{place}</strong>
-                <span>Recorded</span>
-              </div>
-            ))}
-          </div>
+          <WorldMap points={mapPoints} compact />
         </section>
+        <aside className="panel sindhi-world-card">
+          <Globe2 size={25} />
+          <div>
+            <span className="mini-title">SINDHIS WORLDWIDE</span>
+            <h3>See where our community is</h3>
+            <p>Explore anonymous country and city counts. Names are never shown on this map.</p>
+            <button onClick={() => setPage("community")}>
+              See all Sindhis <ArrowRight size={14} />
+            </button>
+          </div>
+        </aside>
         <aside className="panel tip">
           <Lightbulb size={23} />
           <div>
@@ -776,7 +880,147 @@ function Overview({ people, matches, profile, setPage, openAdd }) {
   );
 }
 
-function Family({ people, openAdd, editPerson, deletePerson, invitePerson }) {
+
+function PlacesPage({ people, editPerson }) {
+  const points = familyLocationPoints(people);
+  const unmapped = people.filter(
+    (person) =>
+      (person.birthPlace || person.livedIn) &&
+      !hasCoordinates(person.birthLocation) &&
+      !person.livedLocations.some(hasCoordinates),
+  );
+  return (
+    <div className="page inner-page places-page">
+      <div className="section-heading">
+        <div>
+          <span className="eyebrow">FAMILY JOURNEY</span>
+          <h1>Places in your story</h1>
+          <p>Birthplaces and places lived are plotted when Vansh has a city or country match with coordinates.</p>
+        </div>
+      </div>
+      <section className="panel places-map-panel">
+        <div className="panel-title">
+          <div>
+            <span className="mini-title"><Globe2 size={15} /> YOUR FAMILY WORLD MAP</span>
+            <h2>{points.length ? `${points.length} mapped family places` : "Your family map is waiting for places"}</h2>
+            <p>Only people in your own family tree are named here.</p>
+          </div>
+        </div>
+        <WorldMap points={points} />
+      </section>
+      {unmapped.length > 0 && (
+        <section className="panel unmapped-places">
+          <div className="panel-title">
+            <div>
+              <span className="mini-title">NEEDS LOCATION MATCHING</span>
+              <h2>{unmapped.length} records are still free text</h2>
+              <p>Edit these people and select a city or country so they can be placed accurately on the map.</p>
+            </div>
+          </div>
+          <div className="unmapped-list">
+            {unmapped.map((person) => (
+              <button key={person.id} onClick={() => person.canEdit && editPerson(person)} disabled={!person.canEdit}>
+                <Avatar person={person} />
+                <span><strong>{person.name}</strong><small>{person.birthPlace || person.livedIn}</small></span>
+                <ArrowRight size={15} />
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
+    </div>
+  );
+}
+
+function SindhiWorld() {
+  const [rows, setRows] = useState([]);
+  const [loadingMap, setLoadingMap] = useState(true);
+  const [mapError, setMapError] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    const load = async () => {
+      setLoadingMap(true);
+      const { data, error } = await supabase.rpc("get_sindhi_location_counts");
+      if (!active) return;
+      if (error) setMapError(error.message);
+      else setRows(data || []);
+      setLoadingMap(false);
+    };
+    load();
+    return () => { active = false; };
+  }, []);
+
+  const points = rows
+    .filter((row) => Number.isFinite(Number(row.lat)) && Number.isFinite(Number(row.lon)))
+    .map((row) => ({
+      lat: Number(row.lat),
+      lon: Number(row.lon),
+      count: Number(row.people_count || 0),
+      label: [row.city, row.country].filter(Boolean).join(", ") || "Recorded location",
+      detail: row.country || "",
+    }));
+  const countries = Object.values(rows.reduce((acc, row) => {
+    const key = row.country || "Unknown";
+    acc[key] ||= { country: key, count: 0 };
+    acc[key].count = Math.max(acc[key].count, Number(row.country_people_count || row.people_count || 0));
+    return acc;
+  }, {})).sort((a, b) => b.count - a.count).slice(0, 10);
+
+  return (
+    <div className="page inner-page community-page">
+      <div className="section-heading">
+        <div>
+          <span className="eyebrow">ANONYMOUS COMMUNITY VIEW</span>
+          <h1>Sindhis worldwide</h1>
+          <p>This map shows only aggregated city and country counts from mapped Vansh records. It never returns names, profiles or family-tree identities.</p>
+        </div>
+      </div>
+      <section className="panel community-map-panel">
+        {loadingMap ? (
+          <div className="map-loading"><LoaderCircle className="spin" /><strong>Loading community map</strong></div>
+        ) : mapError ? (
+          <div className="empty"><CircleHelp /><h3>Community map needs the v0.13 database update</h3><p>{mapError}</p></div>
+        ) : (
+          <WorldMap points={points} aggregate emptyText="No structured locations have been contributed yet." />
+        )}
+      </section>
+      {!!countries.length && (
+        <section className="panel country-counts">
+          <div className="panel-title"><div><span className="mini-title">TOP COUNTRIES</span><h2>Where mapped family records are concentrated</h2></div></div>
+          <div className="country-count-grid">
+            {countries.map((item) => <div key={item.country}><strong>{item.country}</strong><span>{item.count} mapped {item.count === 1 ? "person" : "people"}</span></div>)}
+          </div>
+        </section>
+      )}
+    </div>
+  );
+}
+
+function Family({ people, relationships, openAdd, editPerson, deletePerson, invitePerson, verifiedIdentityIds }) {
+  const self = people.find((person) => person.isSelf);
+  const relationToSelf = (person) => {
+    if (!self || person.id === self.id) return "You";
+    const rel = relationships.find((item) =>
+      (item.from === self.id && item.to === person.id) ||
+      (item.to === self.id && item.from === person.id),
+    );
+    if (!rel) return "Extended family";
+    if (rel.type === "sibling") {
+      if (rel.variant === "half") return person.gender === "female" ? "Half-sister" : person.gender === "male" ? "Half-brother" : "Half-sibling";
+      if (rel.variant === "step") return person.gender === "female" ? "Stepsister" : person.gender === "male" ? "Stepbrother" : "Step-sibling";
+      return person.gender === "female" ? "Sister" : person.gender === "male" ? "Brother" : "Sibling";
+    }
+    if (rel.type === "parent") {
+      const personIsParent = rel.from === person.id && rel.to === self.id;
+      const variant = rel.variant === "step" ? "Step" : rel.variant === "adoptive" ? "Adoptive " : "";
+      if (personIsParent) return `${variant}${person.gender === "female" ? "mother" : person.gender === "male" ? "father" : "parent"}`.replace(/^./, (c) => c.toUpperCase());
+      return person.gender === "female" ? "Daughter" : person.gender === "male" ? "Son" : "Child";
+    }
+    if (rel.type === "spouse") return "Spouse";
+    if (rel.type === "partner") return "Partner";
+    return "Family";
+  };
   return (
     <div className="page inner-page">
       <div className="section-heading">
@@ -815,20 +1059,30 @@ function Family({ people, openAdd, editPerson, deletePerson, invitePerson }) {
                   ? "Missing person slot"
                   : person.isSelf
                     ? "Your profile"
-                    : person.ownerId === person.createdBy
-                      ? "Family record"
-                      : "Shared record"}
+                    : verifiedIdentityIds?.has(person.id)
+                      ? "Verified Vansh identity"
+                      : person.ownerId === person.createdBy
+                        ? "Family record"
+                        : "Shared record"}
               </span>
             </div>
             <h3>{person.name}</h3>
+            <span className="relationship-badge">{relationToSelf(person)}</span>
             <p>
               {person.isPlaceholder
                 ? "Name, dates and locations have not been identified yet."
                 : person.birthYear
                   ? `Born ${person.birthYear}${person.birthPlace ? ` in ${person.birthPlace}` : ""}`
-                  : "Birth year unknown"}
+                  : person.ageReported
+                    ? `Age ${person.ageReported}${person.livedIn ? ` · ${person.livedIn}` : ""}`
+                    : "Birth year unknown"}
             </p>
             <div className="person-meta">
+              {!person.isPlaceholder && person.personIdentityId && (
+                <span className="person-id-chip" title="Random Vansh person ID. It does not encode personal data.">
+                  <Fingerprint size={12} /> VNSH-{person.personIdentityId.replaceAll("-", "").slice(0, 10).toUpperCase()}
+                </span>
+              )}
               <span>
                 <GitFork size={14} /> {person.side}
               </span>
@@ -990,7 +1244,7 @@ function Tree({
   // without persisting inferred parent relationships.
   for (let pass = 0; pass < people.length; pass += 1) {
     relationships.forEach((relationship) => {
-      if (relationship.type !== "sibling") return;
+      if (relationship.type !== "sibling" || ["half", "step"].includes(relationship.variant)) return;
       const fromParents = displayParents.get(relationship.from);
       const toParents = displayParents.get(relationship.to);
       if (!fromParents || !toParents) return;
@@ -1188,13 +1442,14 @@ function Tree({
     const children = relationships
       .filter((item) => item.type === "parent" && item.from === person.id)
       .map((item) => item.to);
-    const siblings = relationships
-      .filter(
-        (item) =>
-          item.type === "sibling" &&
-          (item.from === person.id || item.to === person.id),
-      )
-      .map((item) => (item.from === person.id ? item.to : item.from));
+    const siblingRelationships = relationships.filter(
+      (item) =>
+        item.type === "sibling" &&
+        (item.from === person.id || item.to === person.id),
+    );
+    const siblings = siblingRelationships.map((item) =>
+      item.from === person.id ? item.to : item.from,
+    );
     const partnerRelationships = relationships.filter(
       (item) =>
         ["spouse", "partner"].includes(item.type) &&
@@ -1211,7 +1466,9 @@ function Tree({
       partners.length
         ? `Partner of ${names(partners)}${partnershipYear ? ` · married ${partnershipYear}` : ""}`
         : null,
-      siblings.length ? `Sibling of ${names(siblings)}` : null,
+      siblings.length
+        ? `${siblingRelationships.some((item) => item.variant === "half") ? "Half-sibling" : siblingRelationships.some((item) => item.variant === "step") ? "Step-sibling" : "Sibling"} of ${names(siblings)}`
+        : null,
       children.length ? `Parent of ${names(children)}` : null,
     ].filter(Boolean);
   };
@@ -1397,11 +1654,15 @@ function Tree({
                       x2={b[0]}
                       y2={b[1]}
                       className={
-                        ["spouse", "partner"].includes(rel.type)
-                          ? "spouse"
-                          : rel.type.includes("cousin")
-                            ? "cousin"
-                            : rel.type
+                        rel.variant === "half"
+                          ? "half"
+                          : rel.variant === "step"
+                            ? "step"
+                            : ["spouse", "partner"].includes(rel.type)
+                              ? "spouse"
+                              : rel.type.includes("cousin")
+                                ? "cousin"
+                                : rel.type
                       }
                     />
                   );
@@ -1485,108 +1746,6 @@ function Tree({
           </p>
         </div>
       </div>
-    </div>
-  );
-}
-
-function Matches({ matches, connect }) {
-  const [reviewing, setReviewing] = useState(null);
-  return (
-    <div className="page inner-page">
-      <div className="section-heading">
-        <div>
-          <span className="eyebrow">PRIVATE SUGGESTIONS</span>
-          <h1>Possible connections</h1>
-          <p>Nothing is shared until both families choose to connect.</p>
-        </div>
-      </div>
-      <div className="privacy-banner">
-        <LockKeyhole size={22} />
-        <div>
-          <strong>You are in control</strong>
-          <p>
-            We show only broad matching details. Personal contact information
-            stays hidden.
-          </p>
-        </div>
-      </div>
-      <div className="connection-grid">
-        {matches.map((match) => (
-          <article className="connection-card" key={match.id}>
-            <div className="score-ring">
-              <strong>{match.score}%</strong>
-              <span>confidence</span>
-            </div>
-            <Avatar person={match} size="large" />
-            <h2>{match.name}</h2>
-            <p>{match.details}</p>
-            <span className="relation-label">
-              <GitFork size={15} /> Shared family details
-            </span>
-            <div className="why">
-              <strong>Why we matched you</strong>
-              {match.shared.map((item) => (
-                <span key={item}>
-                  <Check size={13} /> {item}
-                </span>
-              ))}
-            </div>
-            <button className="primary" onClick={() => setReviewing(match)}>
-              Review connection
-            </button>
-          </article>
-        ))}
-      </div>
-      {!matches.length && (
-        <div className="panel empty large">
-          <Sparkles size={28} />
-          <h2>No suggestions yet</h2>
-          <p>Add more relatives, surnames and places to find family threads.</p>
-        </div>
-      )}
-      {reviewing && (
-        <div className="modal-wrap">
-          <button className="modal-scrim" onClick={() => setReviewing(null)} />
-          <div className="review-modal">
-            <button className="modal-close" onClick={() => setReviewing(null)}>
-              <X />
-            </button>
-            <span className="mini-title">
-              <ShieldCheck size={14} /> CONNECTION REVIEW
-            </span>
-            <Avatar person={reviewing} size="large" />
-            <h2>Could {reviewing.name} be family?</h2>
-            <p>
-              Vansh found overlapping details in your private family records:
-            </p>
-            <div className="review-reasons">
-              {reviewing.shared.map((x) => (
-                <span key={x}>
-                  <Check size={15} /> Shared {x}
-                </span>
-              ))}
-            </div>
-            <button
-              className="primary"
-              onClick={async () => {
-                await connect(reviewing, "requested");
-                setReviewing(null);
-              }}
-            >
-              <HeartHandshake size={17} /> Send private connection request
-            </button>
-            <button
-              className="quiet"
-              onClick={async () => {
-                await connect(reviewing, "dismissed");
-                setReviewing(null);
-              }}
-            >
-              Not a match
-            </button>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -2044,7 +2203,7 @@ function PersonModal({
       )
       .map((item) => (item.from === anchorId ? item.to : item.from));
     const suggestedParentIds =
-      relation?.type === "sibling"
+      relation?.type === "sibling" && !relation?.variant
         ? parents
         : relation?.direction === "from-anchor"
           ? partners
@@ -2065,6 +2224,7 @@ function PersonModal({
     nickname: person?.nickname || "",
     surname: person?.surname || "",
     maidenName: person?.maidenName || "",
+    birthDate: person?.birthDate || "",
     birthYear: person?.birthYear || "",
     birthLocation: person?.birthLocation || null,
     livedLocations: person?.livedLocations || [],
@@ -2428,6 +2588,19 @@ function PersonModal({
         ) : (
           <div className="form-grid">
             <label>
+              Full birth date <small>If known</small>
+              <input
+                type="date"
+                name="birthDate"
+                value={form.birthDate}
+                onChange={(event) => setForm((current) => ({
+                  ...current,
+                  birthDate: event.target.value,
+                  birthYear: event.target.value ? event.target.value.slice(0, 4) : current.birthYear,
+                }))}
+              />
+            </label>
+            <label>
               Birth year <small>Approximate is okay</small>
               <input
                 name="birthYear"
@@ -2508,6 +2681,16 @@ function FamilyApp({ session }) {
   const [people, setPeople] = useState([]);
   const [relationships, setRelationships] = useState([]);
   const [matches, setMatches] = useState([]);
+  const [identityCandidates, setIdentityCandidates] = useState([]);
+  const [surnameCandidates, setSurnameCandidates] = useState([]);
+  const [verificationInbox, setVerificationInbox] = useState([]);
+  const [verifiedIdentityIds, setVerifiedIdentityIds] = useState(() => new Set());
+  const [verificationLoading, setVerificationLoading] = useState(false);
+  const [verificationError, setVerificationError] = useState("");
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [identityPromptClosed, setIdentityPromptClosed] = useState(false);
+  const [memberIdentitySuggestion, setMemberIdentitySuggestion] = useState(null);
+  const [memberIdentityBusy, setMemberIdentityBusy] = useState(false);
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(true);
   const [dataError, setDataError] = useState("");
@@ -2519,6 +2702,38 @@ function FamilyApp({ session }) {
   const [showNotes, setShowNotes] = useState(false);
   const [menu, setMenu] = useState(false);
   const [query, setQuery] = useState("");
+
+  const refreshVerification = useCallback(async () => {
+    setVerificationLoading(true);
+    setVerificationError("");
+    const [identityResult, surnameResult, inboxResult, verifiedResult] = await Promise.all([
+      supabase.rpc("find_identity_claim_candidates"),
+      supabase.rpc("find_surname_connections"),
+      supabase.rpc("get_verification_inbox"),
+      supabase.from("verified_identity_links").select("candidate_member_id, claimant_member_id"),
+    ]);
+    const firstError = identityResult.error || surnameResult.error || inboxResult.error || verifiedResult.error;
+    if (firstError) {
+      setVerificationError(
+        /does not exist|schema cache|Could not find the function/i.test(firstError.message || "")
+          ? "Run RUN_THIS_IN_SUPABASE_FOR_V014.sql to enable mutual identity verification."
+          : firstError.message,
+      );
+    } else {
+      setIdentityCandidates(identityResult.data || []);
+      setSurnameCandidates(surnameResult.data || []);
+      setVerificationInbox(inboxResult.data || []);
+      setVerifiedIdentityIds(new Set((verifiedResult.data || []).flatMap((row) => [row.candidate_member_id, row.claimant_member_id].filter(Boolean))));
+    }
+    setVerificationLoading(false);
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      refreshVerification();
+    }, 30000);
+    return () => window.clearInterval(timer);
+  }, [refreshVerification]);
 
   useEffect(() => {
     let active = true;
@@ -2550,18 +2765,23 @@ function FamilyApp({ session }) {
         return;
       }
       let rows = peopleResult.data;
-      if (!rows.length && session.user.user_metadata.family_surname) {
+      if (!rows.length && (profileResult.data.surname || session.user.user_metadata.family_surname)) {
         const parts = (profileResult.data.display_name || "")
           .trim()
           .split(/\s+/);
+        const firstName = profileResult.data.first_name || parts[0] || "Me";
+        const surname = profileResult.data.surname || session.user.user_metadata.family_surname || parts.at(-1) || "Unknown";
         const selfResult = await supabase
           .from("family_members")
           .insert({
             owner_id: session.user.id,
             linked_user_id: session.user.id,
-            first_name: parts[0] || "Me",
-            surname: session.user.user_metadata.family_surname,
-            lived_in: profileResult.data.location || null,
+            first_name: firstName,
+            surname,
+            birth_date: profileResult.data.birth_date || null,
+            birth_year: profileResult.data.birth_date ? Number(profileResult.data.birth_date.slice(0, 4)) : null,
+            birth_place: profileResult.data.birth_location_text || null,
+            lived_in: profileResult.data.current_location_text || profileResult.data.location || null,
             family_side: "You",
             is_self: true,
           })
@@ -2588,6 +2808,7 @@ function FamilyApp({ session }) {
           from: row.person_a_id,
           to: row.person_b_id,
           type: row.relationship_type,
+          variant: row.relationship_variant || null,
           startYear: row.start_year,
         })),
       );
@@ -2615,13 +2836,14 @@ function FamilyApp({ session }) {
               .join(" · ") || "Limited details shared",
         })),
       );
+      await refreshVerification();
       setLoading(false);
     };
     loadFamily();
     return () => {
       active = false;
     };
-  }, [session.user.id, session.user.user_metadata.family_surname]);
+  }, [session.user.id, session.user.user_metadata.family_surname, refreshVerification]);
 
   const savePerson = async (form, existing) => {
     const self = people.find((person) => person.isSelf);
@@ -2678,7 +2900,8 @@ function FamilyApp({ session }) {
       nickname: form.nickname.trim() || null,
       maiden_name: form.maidenName.trim() || null,
       gender: form.gender,
-      birth_year: form.birthYear ? Number(form.birthYear) : null,
+      birth_date: form.birthDate || null,
+      birth_year: form.birthYear ? Number(form.birthYear) : (form.birthDate ? Number(form.birthDate.slice(0, 4)) : null),
       birth_location: form.birthLocation,
       lived_locations: livedLocations,
       birth_place:
@@ -2776,6 +2999,7 @@ function FamilyApp({ session }) {
           person_a_id: personAId,
           person_b_id: personBId,
           relationship_type: relation.type,
+          relationship_variant: relation.variant || null,
           start_year:
             ["spouse", "partner"].includes(relation.type) && form.marriageYear
               ? Number(form.marriageYear)
@@ -2848,6 +3072,7 @@ function FamilyApp({ session }) {
           from: relationship.person_a_id,
           to: relationship.person_b_id,
           type: relationship.relationship_type,
+          variant: relationship.relationship_variant || null,
           startYear: relationship.start_year,
         })),
       ]);
@@ -2878,6 +3103,182 @@ function FamilyApp({ session }) {
               .join(" · ") || "Limited details shared",
         })),
       );
+
+    // Strong reverse identity check: when you add/edit a relative, ask whether
+    // that family record may already belong to a registered Vansh account.
+    // This is only a suggestion. The other account still has to approve it.
+    if (!savedPerson.isSelf && !savedPerson.isPlaceholder && savedPerson.firstName && savedPerson.surname) {
+      const reverseResult = await supabase.rpc("find_member_user_candidates", {
+        p_member_id: savedPerson.id,
+      });
+      if (!reverseResult.error && reverseResult.data?.length) {
+        setMemberIdentitySuggestion({
+          member: savedPerson,
+          candidate: reverseResult.data[0],
+        });
+      } else if (reverseResult.error && /does not exist|schema cache|Could not find the function/i.test(reverseResult.error.message || "")) {
+        setVerificationError("Run RUN_THIS_IN_SUPABASE_FOR_V014.sql to enable mutual identity verification.");
+      }
+    }
+  };
+
+  const saveMatchingProfile = async (form) => {
+    const firstName = form.firstName.trim();
+    const surname = form.surname.trim();
+    if (!firstName || !surname) throw new Error("First name and surname are required.");
+    const displayName = [firstName, surname].join(" ");
+    const profilePayload = {
+      display_name: displayName,
+      first_name: firstName,
+      surname,
+      birth_date: form.birthDate || null,
+      birth_location_text: form.birthLocation.trim() || null,
+      current_location_text: form.currentLocation.trim() || null,
+      location: form.currentLocation.trim() || null,
+      discovery_enabled: Boolean(form.discoveryEnabled),
+      updated_at: new Date().toISOString(),
+    };
+    const profileResult = await supabase
+      .from("profiles")
+      .update(profilePayload)
+      .eq("id", session.user.id)
+      .select()
+      .single();
+    if (profileResult.error) throw profileResult.error;
+
+    await supabase.auth.updateUser({
+      data: {
+        display_name: displayName,
+        first_name: firstName,
+        family_surname: surname,
+        birth_date: form.birthDate || null,
+        birth_location: form.birthLocation.trim() || null,
+        location: form.currentLocation.trim() || null,
+        discovery_enabled: Boolean(form.discoveryEnabled),
+      },
+    });
+
+    const self = people.find((person) => person.isSelf);
+    if (self) {
+      let birthLocation = null;
+      let currentLocation = null;
+      if (form.birthLocation.trim()) {
+        try { birthLocation = await geocodeOne(form.birthLocation.trim()); } catch { birthLocation = null; }
+      }
+      if (form.currentLocation.trim()) {
+        try { currentLocation = await geocodeOne(form.currentLocation.trim()); } catch { currentLocation = null; }
+      }
+      const currentResidence = currentLocation
+        ? { ...currentLocation, residenceId: crypto.randomUUID(), startYear: null, endYear: null }
+        : null;
+      const livedLocations = currentResidence
+        ? [currentResidence, ...self.livedLocations.filter((item) => item.display !== currentResidence.display)]
+        : self.livedLocations;
+      const memberResult = await supabase
+        .from("family_members")
+        .update({
+          first_name: firstName,
+          surname,
+          birth_date: form.birthDate || null,
+          birth_year: form.birthDate ? Number(form.birthDate.slice(0, 4)) : (self.birthYear ? Number(self.birthYear) : null),
+          birth_location: birthLocation || self.birthLocation || null,
+          lived_locations: livedLocations,
+          birth_place: birthLocation?.display || form.birthLocation.trim() || null,
+          lived_in: currentLocation?.display || form.currentLocation.trim() || null,
+        })
+        .eq("id", self.id)
+        .select()
+        .single();
+      if (memberResult.error) throw memberResult.error;
+      setPeople((current) => current.map((person, index) =>
+        person.id === self.id ? personFromRow(memberResult.data, index, session.user.id) : person,
+      ));
+    }
+    setProfile(profileResult.data);
+    setIdentityPromptClosed(false);
+    await refreshVerification();
+  };
+
+  const claimIdentity = async (candidate) => {
+    const result = await supabase.rpc("request_identity_claim", {
+      p_candidate_member_id: candidate.candidate_member_id,
+    });
+    if (result.error) throw result.error;
+    setIdentityPromptClosed(true);
+    await refreshVerification();
+  };
+
+  const dismissIdentity = async (candidate) => {
+    const result = await supabase.rpc("dismiss_identity_candidate", {
+      p_candidate_member_id: candidate.candidate_member_id,
+    });
+    if (result.error) throw result.error;
+    setIdentityPromptClosed(true);
+    await refreshVerification();
+  };
+
+  const requestMemberIdentityVerification = async (suggestion) => {
+    if (!suggestion?.member || !suggestion?.candidate) return;
+    setMemberIdentityBusy(true);
+    setVerificationError("");
+    try {
+      const result = await supabase.rpc("request_member_identity_verification", {
+        p_member_id: suggestion.member.id,
+        p_candidate_code: suggestion.candidate.candidate_code,
+      });
+      if (result.error) throw result.error;
+      setMemberIdentitySuggestion(null);
+      await refreshVerification();
+    } catch (error) {
+      setVerificationError(error.message || "Could not send the identity verification request.");
+    } finally {
+      setMemberIdentityBusy(false);
+    }
+  };
+
+  const dismissMemberIdentityCandidate = async (suggestion) => {
+    if (!suggestion?.member || !suggestion?.candidate) return;
+    setMemberIdentityBusy(true);
+    setVerificationError("");
+    try {
+      const result = await supabase.rpc("dismiss_member_identity_candidate", {
+        p_member_id: suggestion.member.id,
+        p_candidate_code: suggestion.candidate.candidate_code,
+      });
+      if (result.error) throw result.error;
+      setMemberIdentitySuggestion(null);
+      await refreshVerification();
+    } catch (error) {
+      setVerificationError(error.message || "Could not dismiss the identity suggestion.");
+    } finally {
+      setMemberIdentityBusy(false);
+    }
+  };
+
+  const requestSurnameConnection = async (candidate) => {
+    const result = await supabase.rpc("request_family_connection", {
+      p_candidate_code: candidate.candidate_code,
+    });
+    if (result.error) throw result.error;
+    await refreshVerification();
+  };
+
+  const dismissSurnameConnection = async (candidate) => {
+    const result = await supabase.rpc("dismiss_surname_candidate", {
+      p_candidate_code: candidate.candidate_code,
+    });
+    if (result.error) throw result.error;
+    await refreshVerification();
+  };
+
+  const respondVerification = async (item, accept) => {
+    const result = await supabase.rpc("respond_verification_request", {
+      p_kind: item.kind,
+      p_request_id: item.request_id,
+      p_accept: Boolean(accept),
+    });
+    if (result.error) throw result.error;
+    await refreshVerification();
   };
 
   const connect = async (match, status) => {
@@ -2957,6 +3358,7 @@ function FamilyApp({ session }) {
         from: relationship.person_a_id,
         to: relationship.person_b_id,
         type: relationship.relationship_type,
+        variant: relationship.relationship_variant || null,
       })),
     ]);
   };
@@ -3005,7 +3407,99 @@ function FamilyApp({ session }) {
     if (result.error) throw result.error;
     setRelationships((current) => [
       ...current,
-      { id: result.data.id, from, to, type, startYear: result.data.start_year },
+      { id: result.data.id, from, to, type, variant: result.data.relationship_variant || null, startYear: result.data.start_year },
+    ]);
+  };
+  const commitVoiceImport = async (draft) => {
+    const narratorDraft = draft.people.find((person) => person.isNarrator);
+    const narrator = people.find((person) => person.id === narratorDraft?.existingId);
+    if (!narrator) throw new Error("The selected narrator is no longer available.");
+
+    const confirmed = draft.people.filter(
+      (person) => !person.isNarrator && person.status === "confirmed",
+    );
+    if (!confirmed.length) throw new Error("Confirm at least one person first.");
+
+    const acceptedIds = new Set([draft.narratorTempId, ...confirmed.map((person) => person.tempId)]);
+    const idMap = new Map([[draft.narratorTempId, narrator.id]]);
+    draft.people.filter((person) => person.existingId).forEach((person) => idMap.set(person.tempId, person.existingId));
+    const inserted = [];
+
+    for (const person of confirmed) {
+      if (person.existingId) continue;
+      const relation = (person.relationToNarrator || "").toLowerCase();
+      const side = relation.includes("maternal") || relation === "mother"
+        ? "Mother's side"
+        : relation.includes("paternal") || relation === "father"
+          ? "Father's side"
+          : narrator.side || "Other";
+      const birthLocationData = person.birthLocation?.trim()
+        ? await geocodeOne(person.birthLocation.trim())
+        : null;
+      const currentLocationData = person.location?.trim()
+        ? await geocodeOne(person.location.trim())
+        : null;
+      const payload = {
+        owner_id: narrator.ownerId || session.user.id,
+        created_by: session.user.id,
+        first_name: person.isPlaceholder ? "Unknown" : person.firstName?.trim() || "Unknown",
+        surname: person.surname?.trim() || narrator.surname || "Unknown",
+        gender: person.gender || "unspecified",
+        birth_year: person.birthYear ? Number(person.birthYear) : null,
+        birth_location: birthLocationData,
+        lived_locations: currentLocationData
+          ? [{ ...currentLocationData, residenceId: crypto.randomUUID(), startYear: null, endYear: null }]
+          : [],
+        birth_place: birthLocationData?.display || person.birthLocation?.trim() || null,
+        lived_in: currentLocationData?.display || person.location?.trim() || null,
+        family_side: side,
+        is_placeholder: Boolean(person.isPlaceholder),
+        placeholder_label: person.isPlaceholder ? person.placeholderLabel || person.relationToNarrator : null,
+        age_as_reported: person.age ? Number(person.age) : null,
+        age_recorded_at: person.age ? new Date().toISOString().slice(0, 10) : null,
+      };
+      let result = await supabase.from("family_members").insert(payload).select().single();
+      if (result.error && /age_as_reported|age_recorded_at/i.test(result.error.message || "")) {
+        const { age_as_reported, age_recorded_at, ...legacyPayload } = payload;
+        void age_as_reported; void age_recorded_at;
+        result = await supabase.from("family_members").insert(legacyPayload).select().single();
+      }
+      if (result.error) throw result.error;
+      idMap.set(person.tempId, result.data.id);
+      inserted.push(result.data);
+    }
+
+    const seen = new Set(relationships.map((relationship) => {
+      const symmetric = ["sibling", "spouse", "partner"].includes(relationship.type);
+      const pair = symmetric ? [relationship.from, relationship.to].sort().join(":") : `${relationship.from}:${relationship.to}`;
+      return `${relationship.type}:${pair}`;
+    }));
+    const relationshipRows = [];
+    draft.relationships.forEach((relationship) => {
+      if (relationship.status === "rejected" || !acceptedIds.has(relationship.from) || !acceptedIds.has(relationship.to)) return;
+      const from = idMap.get(relationship.from), to = idMap.get(relationship.to);
+      if (!from || !to || from === to) return;
+      const symmetric = ["sibling", "spouse", "partner"].includes(relationship.type);
+      const pair = symmetric ? [from, to].sort().join(":") : `${from}:${to}`;
+      const key = `${relationship.type}:${pair}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      relationshipRows.push({ owner_id: narrator.ownerId || session.user.id, created_by: session.user.id, person_a_id: from, person_b_id: to, relationship_type: relationship.type, relationship_variant: relationship.variant || null });
+    });
+
+    let savedRelationships = [];
+    if (relationshipRows.length) {
+      const result = await supabase.from("relationships").insert(relationshipRows).select();
+      if (result.error) throw result.error;
+      savedRelationships = result.data || [];
+    }
+    if (inserted.length) setPeople((current) => [
+      ...current,
+      ...inserted.map((row, index) => personFromRow(row, current.length + index, session.user.id)),
+    ]);
+    if (savedRelationships.length) setRelationships((current) => [
+      ...current,
+      ...savedRelationships.map((relationship) => ({ id: relationship.id, from: relationship.person_a_id, to: relationship.person_b_id, type: relationship.relationship_type, variant: relationship.relationship_variant || null, startYear: relationship.start_year })),
     ]);
   };
   const deletePerson = async (person) => {
@@ -3040,6 +3534,10 @@ function FamilyApp({ session }) {
           .includes(query.toLowerCase()),
       )
     : null;
+  const pendingVerificationCount = verificationInbox.filter(
+    (item) => item.status === "pending" && item.direction === "incoming",
+  ).length;
+  const identityPromptCandidate = identityPromptClosed ? null : identityCandidates[0] || null;
   if (loading)
     return (
       <div className="loading-screen">
@@ -3067,6 +3565,7 @@ function FamilyApp({ session }) {
         close={() => setMenu(false)}
         people={people}
         openNotes={() => setShowNotes(true)}
+        connectionCount={pendingVerificationCount}
       />
       <main>
         <Header
@@ -3076,6 +3575,8 @@ function FamilyApp({ session }) {
           profile={profile}
           self={people.find((person) => person.isSelf)}
           signOut={() => supabase.auth.signOut()}
+          notificationCount={pendingVerificationCount}
+          openNotifications={() => setNotificationsOpen(true)}
         />
         {filtered ? (
           <div className="page search-results">
@@ -3108,16 +3609,26 @@ function FamilyApp({ session }) {
             openAdd={() =>
               setAdding(people.find((person) => person.isSelf) || people[0])
             }
+            openVoice={() => setPage("voice")}
           />
         ) : page === "family" ? (
           <Family
             people={people}
+            relationships={relationships}
             openAdd={() =>
               setAdding(people.find((person) => person.isSelf) || people[0])
             }
             editPerson={setEditing}
             deletePerson={deletePerson}
             invitePerson={setInviting}
+            verifiedIdentityIds={verifiedIdentityIds}
+          />
+        ) : page === "voice" ? (
+          <VoiceFamilyImport
+            people={people}
+            relationships={relationships}
+            onCommit={commitVoiceImport}
+            onOpenTree={() => setPage("tree")}
           />
         ) : page === "tree" ? (
           <Tree
@@ -3128,10 +3639,50 @@ function FamilyApp({ session }) {
             editPerson={setEditing}
             openLinkPeople={() => setLinkingPeople(true)}
           />
+        ) : page === "places" ? (
+          <PlacesPage people={people} editPerson={setEditing} />
+        ) : page === "community" ? (
+          <SindhiWorld />
         ) : (
-          <Matches matches={matches} connect={connect} />
+          <IdentityConnections
+            profile={profile}
+            self={people.find((person) => person.isSelf)}
+            matches={matches}
+            identityCandidates={identityCandidates}
+            surnameCandidates={surnameCandidates}
+            inbox={verificationInbox}
+            loading={verificationLoading}
+            error={verificationError}
+            onSaveProfile={saveMatchingProfile}
+            onClaimIdentity={claimIdentity}
+            onDismissIdentity={dismissIdentity}
+            onRequestSurname={requestSurnameConnection}
+            onDismissSurname={dismissSurnameConnection}
+            onRespond={respondVerification}
+            onLegacyConnect={connect}
+          />
         )}
       </main>
+      <VerificationDrawer
+        open={notificationsOpen}
+        close={() => setNotificationsOpen(false)}
+        inbox={verificationInbox}
+        onOpenConnections={() => setPage("matches")}
+      />
+      <IdentitySuggestionModal
+        candidate={identityPromptCandidate}
+        busy={verificationLoading}
+        onAccept={() => claimIdentity(identityPromptCandidate).catch((error) => setVerificationError(error.message || "Could not send the identity claim."))}
+        onDismiss={() => dismissIdentity(identityPromptCandidate).catch((error) => setVerificationError(error.message || "Could not dismiss the identity suggestion."))}
+        onClose={() => setIdentityPromptClosed(true)}
+      />
+      <MemberIdentitySuggestionModal
+        suggestion={memberIdentitySuggestion}
+        busy={memberIdentityBusy}
+        onAccept={() => requestMemberIdentityVerification(memberIdentitySuggestion)}
+        onDismiss={() => dismissMemberIdentityCandidate(memberIdentitySuggestion)}
+        onClose={() => setMemberIdentitySuggestion(null)}
+      />
       {adding && (
         <PersonModal
           anchor={adding}

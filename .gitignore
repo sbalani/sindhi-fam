@@ -5,6 +5,12 @@ dist/
 .env
 .env.*
 !.env.example
+.env.local
 
 *.log
 .DS_Store
+
+# Local voice backend
+voice_backend/.venv/
+__pycache__/
+*.pyc

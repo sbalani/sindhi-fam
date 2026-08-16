@@ -1,50 +1,55 @@
 const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-}
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+};
 
-Deno.serve(async (req: Request) => {
-  if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders })
-  if (req.method !== 'POST') return Response.json({ error: 'Method not allowed' }, { status: 405, headers: corsHeaders })
-
+Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   try {
-    const { query } = await req.json()
-    const search = typeof query === 'string' ? query.trim() : ''
-    if (search.length < 2 || search.length > 80) return Response.json({ results: [] }, { headers: corsHeaders })
-
-    const url = new URL('https://photon.komoot.io/api/')
-    url.searchParams.set('q', search)
-    url.searchParams.set('limit', '10')
-    url.searchParams.set('lang', 'en')
-    const response = await fetch(url, { headers: { Accept: 'application/json', 'User-Agent': 'Vansh family mapper/1.0' } })
-    if (!response.ok) throw new Error(`Place provider returned ${response.status}`)
-    const payload = await response.json()
-    const seen = new Set<string>()
-    const results = []
-
-    for (const feature of payload.features ?? []) {
-      const properties = feature.properties ?? {}
-      const country = properties.country
-      const city = properties.city || properties.name
-      if (!city || !country || ['country', 'state', 'county'].includes(properties.type)) continue
-      const region = properties.state || properties.county || null
-      const key = `${city}|${region || ''}|${country}`.toLowerCase()
-      if (seen.has(key)) continue
-      seen.add(key)
-      results.push({
-        providerId: `${properties.osm_type || 'osm'}:${properties.osm_id || key}`,
-        city,
-        region,
-        country,
-        countryCode: properties.countrycode?.toUpperCase() || null,
-        display: [city, region, country].filter(Boolean).join(', '),
-        longitude: feature.geometry?.coordinates?.[0] ?? null,
-        latitude: feature.geometry?.coordinates?.[1] ?? null,
-      })
-      if (results.length === 7) break
+    const { query } = await req.json();
+    const q = String(query || "").trim();
+    if (q.length < 2) {
+      return new Response(JSON.stringify({ results: [] }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
-    return Response.json({ results }, { headers: { ...corsHeaders, 'Cache-Control': 'public, max-age=300' } })
+
+    const url = new URL("https://nominatim.openstreetmap.org/search");
+    url.searchParams.set("q", q);
+    url.searchParams.set("format", "jsonv2");
+    url.searchParams.set("addressdetails", "1");
+    url.searchParams.set("limit", "6");
+
+    const response = await fetch(url, {
+      headers: {
+        "User-Agent": "VanshFamilyMap/0.13 (Supabase Edge Function)",
+        "Accept-Language": "en",
+      },
+    });
+    if (!response.ok) throw new Error(`Geocoder returned ${response.status}`);
+    const data = await response.json();
+    const results = data.map((item: any) => {
+      const address = item.address || {};
+      const city = address.city || address.town || address.village || address.municipality || address.county || "";
+      return {
+        providerId: String(item.place_id || ""),
+        display: item.display_name || [city, address.country].filter(Boolean).join(", "),
+        city,
+        region: address.state || address.region || "",
+        country: address.country || "",
+        countryCode: String(address.country_code || "").toUpperCase(),
+        lat: item.lat ? Number(item.lat) : null,
+        lon: item.lon ? Number(item.lon) : null,
+      };
+    }).filter((item: any) => item.country);
+
+    return new Response(JSON.stringify({ results }), {
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   } catch (error) {
-    return Response.json({ error: error instanceof Error ? error.message : 'Place search failed' }, { status: 502, headers: corsHeaders })
+    return new Response(JSON.stringify({ error: String(error), results: [] }), {
+      status: 500,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   }
-})
+});
