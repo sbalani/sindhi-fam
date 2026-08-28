@@ -33,14 +33,29 @@ Deno.serve(async (req: Request) => {
     if (personError || !person) return json({ error: 'You do not have access to invite this family member.' }, 403)
     if (person.linked_user_id) return json({ error: `${person.first_name} already has a linked Vansh account.` }, 409)
 
+    const { count: recentInvites } = await admin
+      .from('family_invitations')
+      .select('*', { count: 'exact', head: true })
+      .eq('inviter_id', userData.user.id)
+      .gte('created_at', new Date(Date.now() - 60 * 60 * 1000).toISOString())
+    if ((recentInvites || 0) >= 20) return json({ error: 'Invitation limit reached. Please try again later.' }, 429)
+
     const { data: inviterPerson } = await userClient.from('family_members').select('id').eq('owner_id', person.owner_id).eq('linked_user_id', userData.user.id).limit(1).maybeSingle()
-    const { data: invitation, error: inviteError } = await admin.from('family_invitations').insert({ graph_owner_id: person.owner_id, inviter_id: userData.user.id, inviter_person_id: inviterPerson?.id || null, person_id: person.id, email, scope }).select('id').single()
+    const { data: invitation, error: inviteError } = await admin.from('family_invitations').insert({
+      graph_owner_id: person.owner_id,
+      inviter_id: userData.user.id,
+      inviter_person_id: inviterPerson?.id || null,
+      person_id: person.id,
+      email,
+      scope,
+      status: 'pending',
+    }).select('id').single()
     if (inviteError) {
       if (inviteError.code === '23505') return json({ error: 'A pending invitation already exists for this person and email.' }, 409)
       throw inviteError
     }
 
-    const redirectTo = 'https://sindhi-fam.vercel.app'
+    const redirectTo = Deno.env.get('VANSH_APP_URL') || 'https://sindhi-fam.vercel.app'
     const metadata = { display_name: `${person.first_name} ${person.surname}`, family_surname: person.surname, vansh_invitation_id: invitation.id }
     const { error: newUserError } = await admin.auth.admin.inviteUserByEmail(email, { data: metadata, redirectTo })
     let delivery = 'invitation'

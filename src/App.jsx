@@ -36,10 +36,10 @@ const nav = [
   { id: "home", label: "Overview", icon: LayoutDashboard },
   { id: "family", label: "My family", icon: UsersRound },
   { id: "tree", label: "Family map", icon: Network },
-  { id: "matches", label: "Connections", icon: Sparkles, count: 3 },
+  { id: "matches", label: "Connections", icon: Sparkles },
 ];
 
-const APP_VERSION = "0.11.1";
+const APP_VERSION = "0.12.0";
 
 const RELATION_OPTIONS = [
   {
@@ -153,58 +153,154 @@ const residencePeriod = (location) => {
 const residenceLabel = (location) =>
   [location.display, residencePeriod(location)].filter(Boolean).join(" · ");
 
-const personFromRow = (row, index = 0, currentUserId = "") => ({
-  id: row.id,
-  firstName: row.is_placeholder
-    ? row.placeholder_label || "Unknown relative"
-    : row.first_name,
-  surname: row.surname,
-  nickname: row.nickname || "",
-  maidenName: row.maiden_name || "",
-  birthYear: row.birth_year?.toString() || "",
-  birthLocation: row.birth_location || null,
-  livedLocations: row.lived_locations || [],
-  birthPlace: row.birth_location?.display || row.birth_place || "",
-  livedIn: row.lived_locations?.length
-    ? row.lived_locations.map((location) => location.display).join(" · ")
-    : row.lived_in || "",
-  legacyBirthPlace: !row.birth_location ? row.birth_place || "" : "",
-  legacyLivedIn: !row.lived_locations?.length ? row.lived_in || "" : "",
-  side: row.family_side || "Other",
-  gender: row.gender || "unspecified",
-  isSelf:
-    row.linked_user_id === currentUserId ||
-    (row.is_self && row.owner_id === currentUserId),
-  ownerId: row.owner_id,
-  createdBy: row.created_by,
-  linkedUserId: row.linked_user_id,
-  isPlaceholder: row.is_placeholder,
-  placeholderLabel: row.placeholder_label,
-  filledBy: row.filled_by,
-  canEdit:
-    row.owner_id === currentUserId ||
-    row.created_by === currentUserId ||
-    row.linked_user_id === currentUserId ||
-    row.filled_by === currentUserId ||
-    row.is_placeholder,
-  canDelete: !row.is_self && row.created_by === currentUserId,
-  name: row.is_placeholder
-    ? row.placeholder_label || "Unknown relative"
-    : [row.first_name, row.nickname ? `"${row.nickname}"` : null, row.surname]
-        .filter(Boolean)
-        .join(" "),
-  initials: row.is_placeholder
-    ? "?"
-    : `${row.first_name?.[0] || ""}${row.surname?.[0] || ""}`.toUpperCase(),
-  color: colors[index % colors.length],
-});
+const personFromRow = (row, index = 0, currentUserId = "") => {
+  const isClaimed = Boolean(row.linked_user_id);
+  const isIdentityOwner = row.linked_user_id === currentUserId;
+  const canManageUnclaimed =
+    !isClaimed &&
+    (row.owner_id === currentUserId ||
+      row.created_by === currentUserId ||
+      row.filled_by === currentUserId);
+
+  return {
+    id: row.id,
+    personIdentityId: row.person_identity_id,
+    firstName: row.is_placeholder
+      ? row.placeholder_label || "Unknown relative"
+      : row.first_name,
+    surname: row.surname,
+    nickname: row.nickname || "",
+    maidenName: row.maiden_name || "",
+    birthYear: row.birth_year?.toString() || "",
+    birthDate: row.birth_date || "",
+    birthLocation: row.birth_location || null,
+    livedLocations: row.lived_locations || [],
+    birthPlace: row.birth_location?.display || row.birth_place || "",
+    livedIn: row.lived_locations?.length
+      ? row.lived_locations.map((location) => location.display).join(" · ")
+      : row.lived_in || "",
+    legacyBirthPlace: !row.birth_location ? row.birth_place || "" : "",
+    legacyLivedIn: !row.lived_locations?.length ? row.lived_in || "" : "",
+    side: row.family_side || "Other",
+    gender: row.gender || "unspecified",
+    isSelf: Boolean(row.is_self && row.owner_id === currentUserId),
+    ownerId: row.owner_id,
+    createdBy: row.created_by,
+    linkedUserId: row.linked_user_id,
+    isClaimed,
+    isIdentityOwner,
+    isPlaceholder: row.is_placeholder,
+    placeholderLabel: row.placeholder_label,
+    filledBy: row.filled_by,
+    canEdit: isIdentityOwner || canManageUnclaimed,
+    canSuggest: isClaimed && !isIdentityOwner,
+    canDelete:
+      !isClaimed &&
+      !row.is_self &&
+      (row.created_by === currentUserId || row.owner_id === currentUserId),
+    name: row.is_placeholder
+      ? row.placeholder_label || "Unknown relative"
+      : [row.first_name, row.nickname ? `"${row.nickname}"` : null, row.surname]
+          .filter(Boolean)
+          .join(" "),
+    initials: row.is_placeholder
+      ? "?"
+      : `${row.first_name?.[0] || ""}${row.surname?.[0] || ""}`.toUpperCase(),
+    color: colors[index % colors.length],
+  };
+};
+
+const parentIdsFor = (personId, relationships) =>
+  relationships
+    .filter(
+      (relationship) =>
+        relationship.type === "parent" && relationship.to === personId,
+    )
+    .map((relationship) => relationship.from);
+
+const siblingDetailsFor = (personId, relationships) => {
+  const myParentRelationships = relationships.filter(
+    (relationship) =>
+      relationship.type === "parent" && relationship.to === personId,
+  );
+  const myParentIds = new Set(
+    myParentRelationships.map((relationship) => relationship.from),
+  );
+  const candidateIds = new Set();
+
+  relationships.forEach((relationship) => {
+    if (
+      relationship.type === "parent" &&
+      myParentIds.has(relationship.from)
+    )
+      candidateIds.add(relationship.to);
+    if (
+      relationship.type === "sibling" &&
+      (relationship.from === personId || relationship.to === personId)
+    )
+      candidateIds.add(
+        relationship.from === personId ? relationship.to : relationship.from,
+      );
+  });
+
+  candidateIds.delete(personId);
+  return [...candidateIds].map((id) => {
+    const theirParents = relationships.filter(
+      (relationship) =>
+        relationship.type === "parent" && relationship.to === id,
+    );
+    const shared = theirParents
+      .map((theirRelationship) => {
+        const mine = myParentRelationships.find(
+          (relationship) =>
+            relationship.from === theirRelationship.from,
+        );
+        if (!mine) return null;
+        const variants = [
+          mine.variant || "unspecified",
+          theirRelationship.variant || "unspecified",
+        ];
+        return {
+          parentId: theirRelationship.from,
+          stepLike: variants.some((value) =>
+            ["step", "guardian"].includes(value),
+          ),
+        };
+      })
+      .filter(Boolean);
+    const directReported = relationships.some(
+      (relationship) =>
+        relationship.type === "sibling" &&
+        ((relationship.from === personId && relationship.to === id) ||
+          (relationship.from === id && relationship.to === personId)),
+    );
+    const familyShared = shared.filter((item) => !item.stepLike);
+
+    return {
+      id,
+      sharedParentIds: familyShared.map((item) => item.parentId),
+      kind: familyShared.length >= 2
+        ? "full"
+        : familyShared.length === 1
+          ? "half"
+          : shared.some((item) => item.stepLike)
+            ? "step"
+            : directReported
+              ? "reported"
+              : "reported",
+    };
+  });
+};
 
 function AuthScreen() {
   const [mode, setMode] = useState("signup");
   const [form, setForm] = useState({
-    name: "",
+    firstName: "",
     surname: "",
+    birthDate: "",
+    birthLocation: "",
     location: "",
+    discoveryEnabled: true,
     email: "",
     password: "",
   });
@@ -227,9 +323,13 @@ function AuthScreen() {
             options: {
               emailRedirectTo: window.location.origin,
               data: {
-                display_name: form.name,
-                family_surname: form.surname,
-                location: form.location,
+                display_name: `${form.firstName.trim()} ${form.surname.trim()}`.trim(),
+                first_name: form.firstName.trim(),
+                family_surname: form.surname.trim(),
+                birth_date: form.birthDate || null,
+                birth_location: form.birthLocation.trim() || null,
+                location: form.location.trim() || null,
+                discovery_enabled: form.discoveryEnabled,
               },
             },
           })
@@ -297,13 +397,13 @@ function AuthScreen() {
           {mode === "signup" && (
             <div className="form-grid">
               <label>
-                Your name
+                First name
                 <input
                   required
-                  name="name"
-                  value={form.name}
+                  name="firstName"
+                  value={form.firstName}
                   onChange={update}
-                  placeholder="First and last name"
+                  placeholder="e.g. Soham"
                 />
               </label>
               <label>
@@ -316,6 +416,24 @@ function AuthScreen() {
                   placeholder="e.g. Advani"
                 />
               </label>
+              <label>
+                Date of birth <small>Optional</small>
+                <input
+                  type="date"
+                  name="birthDate"
+                  value={form.birthDate}
+                  onChange={update}
+                />
+              </label>
+              <label>
+                Place of birth <small>Optional</small>
+                <input
+                  name="birthLocation"
+                  value={form.birthLocation}
+                  onChange={update}
+                  placeholder="City or country"
+                />
+              </label>
               <label className="wide">
                 Where do you live? <small>Optional</small>
                 <input
@@ -324,6 +442,19 @@ function AuthScreen() {
                   onChange={update}
                   placeholder="City or country"
                 />
+              </label>
+              <label className="inline-check wide discovery-choice">
+                <input
+                  type="checkbox"
+                  checked={form.discoveryEnabled}
+                  onChange={(event) =>
+                    setForm((current) => ({
+                      ...current,
+                      discoveryEnabled: event.target.checked,
+                    }))
+                  }
+                />
+                Allow Vansh to privately suggest possible identity or family matches.
               </label>
             </div>
           )}
@@ -402,7 +533,7 @@ function Avatar({ person, size = "medium" }) {
   );
 }
 
-function Sidebar({ page, setPage, open, close, people, openNotes }) {
+function Sidebar({ page, setPage, open, close, people, openNotes, notificationCount = 0 }) {
   return (
     <>
       {open && (
@@ -419,7 +550,7 @@ function Sidebar({ page, setPage, open, close, people, openNotes }) {
           </div>
         </div>
         <nav>
-          {nav.map(({ id, label, icon: Icon, count }) => (
+          {nav.map(({ id, label, icon: Icon }) => (
             <button
               className={page === id ? "active" : ""}
               onClick={() => {
@@ -430,7 +561,9 @@ function Sidebar({ page, setPage, open, close, people, openNotes }) {
             >
               <Icon size={19} />
               <span>{label}</span>
-              {count && <b>{count}</b>}
+              {id === "matches" && notificationCount > 0 && (
+                <b>{notificationCount}</b>
+              )}
             </button>
           ))}
         </nav>
@@ -525,7 +658,7 @@ function PatchNotes({ close }) {
   );
 }
 
-function Header({ setMenu, query, setQuery, profile, self, signOut }) {
+function Header({ setMenu, query, setQuery, profile, self, signOut, notificationCount = 0, onNotifications }) {
   const current = self || {
     initials: profile?.display_name?.slice(0, 2).toUpperCase() || "VF",
     color: "terracotta",
@@ -543,8 +676,14 @@ function Header({ setMenu, query, setQuery, profile, self, signOut }) {
           placeholder="Search your people, surnames or places"
         />
       </div>
-      <button className="icon-button notification">
+      <button
+        className="icon-button notification"
+        onClick={onNotifications}
+        title="Open verification inbox"
+        aria-label={`Open verification inbox${notificationCount ? `, ${notificationCount} pending` : ""}`}
+      >
         <Bell size={19} />
+        {notificationCount > 0 && <b>{notificationCount}</b>}
       </button>
       <div className="header-user">
         <Avatar person={current} size="small" />
@@ -776,7 +915,7 @@ function Overview({ people, matches, profile, setPage, openAdd }) {
   );
 }
 
-function Family({ people, openAdd, editPerson, deletePerson, invitePerson }) {
+function Family({ people, openAdd, editPerson, deletePerson, invitePerson, openMerge }) {
   return (
     <div className="page inner-page">
       <div className="section-heading">
@@ -788,9 +927,14 @@ function Family({ people, openAdd, editPerson, deletePerson, invitePerson }) {
             you.
           </p>
         </div>
-        <button className="primary" onClick={openAdd}>
-          <Plus size={18} /> Add family member
-        </button>
+        <div className="heading-actions">
+          <button className="quiet" onClick={openMerge}>
+            <Link2 size={17} /> Merge duplicates
+          </button>
+          <button className="primary" onClick={openAdd}>
+            <Plus size={18} /> Add family member
+          </button>
+        </div>
       </div>
       <div className="toolbar">
         <div className="search-box">
@@ -813,11 +957,13 @@ function Family({ people, openAdd, editPerson, deletePerson, invitePerson }) {
                 <Check size={12} />{" "}
                 {person.isPlaceholder
                   ? "Missing person slot"
-                  : person.isSelf
-                    ? "Your profile"
-                    : person.ownerId === person.createdBy
-                      ? "Family record"
-                      : "Shared record"}
+                  : person.isIdentityOwner
+                    ? "Your verified profile"
+                    : person.isClaimed
+                      ? "Claimed profile"
+                      : person.isSelf
+                        ? "Your profile"
+                        : "Unclaimed family record"}
               </span>
             </div>
             <h3>{person.name}</h3>
@@ -857,8 +1003,12 @@ function Family({ people, openAdd, editPerson, deletePerson, invitePerson }) {
                   {person.isPlaceholder ? "Fill this slot" : "Edit details"}{" "}
                   <ArrowRight size={14} />
                 </button>
+              ) : person.canSuggest ? (
+                <button onClick={() => editPerson(person)}>
+                  Suggest correction <ArrowRight size={14} />
+                </button>
               ) : (
-                <span>Live shared record</span>
+                <span>Read-only shared record</span>
               )}
               <div>
                 {!person.isSelf && !person.linkedUserId && (
@@ -1000,49 +1150,22 @@ function Tree({
         fromParents.forEach((parentId) => toParents.add(parentId));
     });
   }
+  // Each person is rendered once. Partnerships are edges rather than a single
+  // two-person unit, so remarriage and multiple partners do not force one
+  // relationship to "win" the layout.
   const assignedUnit = new Map();
   const traditionalUnits = [];
-  const addUnit = (memberIds) => {
-    const members = memberIds
-      .map((personId) => peopleById.get(personId))
-      .filter(Boolean);
-    if (!members.length) return;
-    const id = memberIds.slice().sort().join("-");
+  const addUnit = (person) => {
+    if (!person || assignedUnit.has(person.id)) return;
     const unit = {
-      id,
-      members,
-      level: Math.min(...members.map((person) => levels[person.id] ?? 0)),
+      id: person.id,
+      members: [person],
+      level: levels[person.id] ?? 0,
     };
     traditionalUnits.push(unit);
-    members.forEach((person) => assignedUnit.set(person.id, id));
+    assignedUnit.set(person.id, unit.id);
   };
-  relationships
-    .filter((relationship) => ["spouse", "partner"].includes(relationship.type))
-    .forEach((relationship) => {
-      if (
-        !assignedUnit.has(relationship.from) &&
-        !assignedUnit.has(relationship.to)
-      )
-        addUnit([relationship.from, relationship.to]);
-    });
-  const explicitParentsByChild = new Map();
-  relationships.forEach((relationship) => {
-    if (relationship.type !== "parent") return;
-    const parents = explicitParentsByChild.get(relationship.to) || [];
-    parents.push(relationship.from);
-    explicitParentsByChild.set(relationship.to, parents);
-  });
-  explicitParentsByChild.forEach((parentIds) => {
-    if (
-      parentIds.length > 1 &&
-      !assignedUnit.has(parentIds[0]) &&
-      !assignedUnit.has(parentIds[1])
-    )
-      addUnit(parentIds.slice(0, 2));
-  });
-  people.forEach((person) => {
-    if (!assignedUnit.has(person.id)) addUnit([person.id]);
-  });
+  people.forEach(addUnit);
   const directlyRelatedAsSiblings = (personAId, personBId) =>
     relationships.some(
       (relationship) =>
@@ -1107,17 +1230,30 @@ function Tree({
       displayParents.get(child.id)?.forEach((parentId) => {
         const parentUnitId = assignedUnit.get(parentId);
         if (!parentUnitId || parentUnitId === childUnit.id) return;
-        const key = `${parentUnitId}:${childUnit.id}`;
+        const key = `parent:${parentUnitId}:${childUnit.id}`;
         if (traditionalEdgeKeys.has(key)) return;
         traditionalEdgeKeys.add(key);
         traditionalEdges.push({
           key,
           from: parentUnitId,
           to: childUnit.id,
+          kind: "parent",
         });
       });
     });
   });
+  relationships
+    .filter((relationship) => ["spouse", "partner"].includes(relationship.type))
+    .forEach((relationship) => {
+      const from = assignedUnit.get(relationship.from);
+      const to = assignedUnit.get(relationship.to);
+      if (!from || !to || from === to) return;
+      const pair = [from, to].sort();
+      const key = `partner:${pair[0]}:${pair[1]}`;
+      if (traditionalEdgeKeys.has(key)) return;
+      traditionalEdgeKeys.add(key);
+      traditionalEdges.push({ key, from, to, kind: "partner" });
+    });
   const traditionalEdgesJson = JSON.stringify(traditionalEdges);
   const generationLabel = (level) => {
     if (level === 0) return "Your generation";
@@ -1145,6 +1281,23 @@ function Tree({
           if (!parent || !child) return [];
           const parentRect = parent.getBoundingClientRect();
           const childRect = child.getBoundingClientRect();
+          if (edge.kind === "partner") {
+            const fromX =
+              parentRect.left + parentRect.width / 2 - canvasRect.left;
+            const fromY =
+              parentRect.top + parentRect.height / 2 - canvasRect.top;
+            const toX =
+              childRect.left + childRect.width / 2 - canvasRect.left;
+            const toY =
+              childRect.top + childRect.height / 2 - canvasRect.top;
+            return [
+              {
+                key: edge.key,
+                kind: "partner",
+                d: `M ${fromX} ${fromY} L ${toX} ${toY}`,
+              },
+            ];
+          }
           const fromX =
             parentRect.left + parentRect.width / 2 - canvasRect.left;
           const fromY = parentRect.bottom - canvasRect.top;
@@ -1154,6 +1307,7 @@ function Tree({
           return [
             {
               key: edge.key,
+              kind: "parent",
               d: `M ${fromX} ${fromY} V ${middleY} H ${toX} V ${toY}`,
             },
           ];
@@ -1188,13 +1342,19 @@ function Tree({
     const children = relationships
       .filter((item) => item.type === "parent" && item.from === person.id)
       .map((item) => item.to);
-    const siblings = relationships
-      .filter(
-        (item) =>
-          item.type === "sibling" &&
-          (item.from === person.id || item.to === person.id),
-      )
-      .map((item) => (item.from === person.id ? item.to : item.from));
+    const siblingDetails = siblingDetailsFor(person.id, relationships);
+    const fullSiblings = siblingDetails
+      .filter((item) => item.kind === "full")
+      .map((item) => item.id);
+    const halfSiblings = siblingDetails
+      .filter((item) => item.kind === "half")
+      .map((item) => item.id);
+    const stepSiblings = siblingDetails
+      .filter((item) => item.kind === "step")
+      .map((item) => item.id);
+    const reportedSiblings = siblingDetails
+      .filter((item) => item.kind === "reported")
+      .map((item) => item.id);
     const partnerRelationships = relationships.filter(
       (item) =>
         ["spouse", "partner"].includes(item.type) &&
@@ -1211,7 +1371,12 @@ function Tree({
       partners.length
         ? `Partner of ${names(partners)}${partnershipYear ? ` · married ${partnershipYear}` : ""}`
         : null,
-      siblings.length ? `Sibling of ${names(siblings)}` : null,
+      fullSiblings.length ? `Sibling of ${names(fullSiblings)}` : null,
+      halfSiblings.length ? `Half-sibling of ${names(halfSiblings)}` : null,
+      stepSiblings.length ? `Step-sibling of ${names(stepSiblings)}` : null,
+      reportedSiblings.length
+        ? `Reported sibling of ${names(reportedSiblings)}`
+        : null,
       children.length ? `Parent of ${names(children)}` : null,
     ].filter(Boolean);
   };
@@ -1223,9 +1388,15 @@ function Tree({
       <button
         type="button"
         className="tree-person-edit"
-        onClick={() => person.canEdit && editPerson(person)}
-        disabled={!person.canEdit}
-        title={person.canEdit ? `Edit ${person.name}` : person.name}
+        onClick={() => (person.canEdit || person.canSuggest) && editPerson(person)}
+        disabled={!person.canEdit && !person.canSuggest}
+        title={
+          person.canEdit
+            ? `Edit ${person.name}`
+            : person.canSuggest
+              ? `Suggest a correction for ${person.name}`
+              : person.name
+        }
       >
         <Avatar person={person} />
         <strong>
@@ -1238,8 +1409,10 @@ function Tree({
             <small key={label}>{label}</small>
           ))}
         </div>
-        {person.canEdit && (
-          <small className="edit-hint">Tap to edit details</small>
+        {(person.canEdit || person.canSuggest) && (
+          <small className="edit-hint">
+            {person.canEdit ? "Tap to edit details" : "Tap to suggest a correction"}
+          </small>
         )}
       </button>
       <button
@@ -1334,7 +1507,7 @@ function Tree({
               aria-hidden="true"
             >
               {traditionalLines.paths.map((path) => (
-                <path key={path.key} d={path.d} />
+                <path key={path.key} d={path.d} className={path.kind === "partner" ? "partner-line" : ""} />
               ))}
             </svg>
             {traditionalRows.map((row) => (
@@ -1421,10 +1594,16 @@ function Tree({
                     <button
                       type="button"
                       className="map-person-edit"
-                      onClick={() => person.canEdit && editPerson(person)}
-                      disabled={!person.canEdit}
+                      onClick={() =>
+                        (person.canEdit || person.canSuggest) && editPerson(person)
+                      }
+                      disabled={!person.canEdit && !person.canSuggest}
                       title={
-                        person.canEdit ? `Edit ${person.name}` : person.name
+                        person.canEdit
+                          ? `Edit ${person.name}`
+                          : person.canSuggest
+                            ? `Suggest a correction for ${person.name}`
+                            : person.name
                       }
                     >
                       <Avatar person={person} />
@@ -1489,100 +1668,365 @@ function Tree({
   );
 }
 
-function Matches({ matches, connect }) {
-  const [reviewing, setReviewing] = useState(null);
+function Connections({
+  matches,
+  identityCandidates,
+  inbox,
+  connect,
+  requestIdentity,
+  dismissIdentity,
+  respondInbox,
+}) {
+  const [reviewingFamily, setReviewingFamily] = useState(null);
+  const [reviewingIdentity, setReviewingIdentity] = useState(null);
+  const [busyId, setBusyId] = useState("");
+  const [error, setError] = useState("");
+  const incoming = inbox.filter(
+    (item) => item.direction === "incoming" && item.status === "pending",
+  );
+  const activity = inbox.filter(
+    (item) => !(item.direction === "incoming" && item.status === "pending"),
+  );
+
+  const act = async (id, action) => {
+    setBusyId(id);
+    setError("");
+    try {
+      await action();
+    } catch (actionError) {
+      setError(actionError.message);
+    } finally {
+      setBusyId("");
+    }
+  };
+
   return (
     <div className="page inner-page">
       <div className="section-heading">
         <div>
-          <span className="eyebrow">PRIVATE SUGGESTIONS</span>
-          <h1>Possible connections</h1>
-          <p>Nothing is shared until both families choose to connect.</p>
-        </div>
-      </div>
-      <div className="privacy-banner">
-        <LockKeyhole size={22} />
-        <div>
-          <strong>You are in control</strong>
+          <span className="eyebrow">TRUST & CONNECTIONS</span>
+          <h1>Connections</h1>
           <p>
-            We show only broad matching details. Personal contact information
-            stays hidden.
+            Invitations, identity verification and family matches are separate.
+            Nothing links automatically.
           </p>
         </div>
       </div>
-      <div className="connection-grid">
-        {matches.map((match) => (
-          <article className="connection-card" key={match.id}>
-            <div className="score-ring">
-              <strong>{match.score}%</strong>
-              <span>confidence</span>
-            </div>
-            <Avatar person={match} size="large" />
-            <h2>{match.name}</h2>
-            <p>{match.details}</p>
-            <span className="relation-label">
-              <GitFork size={15} /> Shared family details
-            </span>
-            <div className="why">
-              <strong>Why we matched you</strong>
-              {match.shared.map((item) => (
-                <span key={item}>
-                  <Check size={13} /> {item}
-                </span>
-              ))}
-            </div>
-            <button className="primary" onClick={() => setReviewing(match)}>
-              Review connection
-            </button>
-          </article>
-        ))}
-      </div>
-      {!matches.length && (
-        <div className="panel empty large">
-          <Sparkles size={28} />
-          <h2>No suggestions yet</h2>
-          <p>Add more relatives, surnames and places to find family threads.</p>
+
+      {error && <div className="auth-message">{error}</div>}
+
+      <section className="connection-section">
+        <div className="subsection-heading">
+          <div>
+            <span className="mini-title">VERIFICATION INBOX</span>
+            <h2>Requests needing your decision</h2>
+          </div>
+          {incoming.length > 0 && <strong>{incoming.length} pending</strong>}
         </div>
+        {incoming.length ? (
+          <div className="request-list">
+            {incoming.map((item) => (
+              <article className="request-card" key={`${item.kind}-${item.request_id}`}>
+                <div>
+                  <span className={`request-kind ${item.kind}`}>
+                    {item.kind === "identity"
+                      ? "Identity claim"
+                      : item.kind === "invitation"
+                        ? "Family invitation"
+                        : item.kind === "correction"
+                          ? "Correction suggestion"
+                          : "Family connection"}
+                  </span>
+                  <h3>
+                    {item.kind === "identity"
+                      ? `${item.counterpart_name} says this record may be them`
+                      : item.kind === "invitation"
+                        ? `${item.counterpart_name} invited you`
+                        : item.kind === "correction"
+                          ? `${item.counterpart_name} suggested a change`
+                          : `${item.counterpart_name} wants to connect families`}
+                  </h3>
+                  {item.subject_name && <p>Record: {item.subject_name}</p>}
+                  <div className="why compact">
+                    {(item.shared_details || []).map((detail) => (
+                      <span key={detail}>
+                        <Check size={13} /> {detail}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+                <div className="request-actions">
+                  <button
+                    className="quiet"
+                    disabled={busyId === item.request_id}
+                    onClick={() =>
+                      act(item.request_id, () =>
+                        respondInbox(item, false),
+                      )
+                    }
+                  >
+                    Reject
+                  </button>
+                  <button
+                    className="primary"
+                    disabled={busyId === item.request_id}
+                    onClick={() =>
+                      act(item.request_id, () =>
+                        respondInbox(item, true),
+                      )
+                    }
+                  >
+                    {busyId === item.request_id ? (
+                      <LoaderCircle className="spin" size={15} />
+                    ) : (
+                      <Check size={15} />
+                    )}{" "}
+                    Accept
+                  </button>
+                </div>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <div className="panel empty compact-empty">
+            <ShieldCheck size={24} />
+            <h3>No decisions waiting</h3>
+            <p>New claims, invitations and corrections will appear here.</p>
+          </div>
+        )}
+      </section>
+
+      <section className="connection-section">
+        <div className="subsection-heading">
+          <div>
+            <span className="mini-title">IDENTITY SUGGESTIONS</span>
+            <h2>Could an existing record be you?</h2>
+            <p>
+              A match is only a suggestion. Requesting a claim still requires
+              the original record creator to approve it.
+            </p>
+          </div>
+        </div>
+        <div className="connection-grid">
+          {identityCandidates.map((candidate) => (
+            <article className="connection-card identity-card" key={candidate.id}>
+              <div className="score-ring">
+                <strong>{candidate.score}</strong>
+                <span>match score</span>
+              </div>
+              <Avatar person={candidate} size="large" />
+              <h2>{candidate.name}</h2>
+              <p>{candidate.details}</p>
+              <span className="relation-label">
+                <ShieldCheck size={15} /> {candidate.personCode}
+              </span>
+              <div className="why">
+                <strong>Why Vansh suggested this</strong>
+                {candidate.shared.map((item) => (
+                  <span key={item}>
+                    <Check size={13} /> {item}
+                  </span>
+                ))}
+              </div>
+              <button
+                className="primary"
+                onClick={() => setReviewingIdentity(candidate)}
+              >
+                Review identity suggestion
+              </button>
+            </article>
+          ))}
+        </div>
+        {!identityCandidates.length && (
+          <div className="panel empty compact-empty">
+            <ShieldCheck size={24} />
+            <h3>No identity suggestions</h3>
+            <p>Vansh has not found a sufficiently strong candidate for you.</p>
+          </div>
+        )}
+      </section>
+
+      <section className="connection-section">
+        <div className="subsection-heading">
+          <div>
+            <span className="mini-title">FAMILY MATCHES</span>
+            <h2>Possible overlapping family branches</h2>
+            <p>
+              These are family-to-family suggestions, not claims that two
+              people are the same person.
+            </p>
+          </div>
+        </div>
+        <div className="privacy-banner">
+          <LockKeyhole size={22} />
+          <div>
+            <strong>Private by default</strong>
+            <p>
+              Only broad matching clues are shown until both families choose to
+              connect.
+            </p>
+          </div>
+        </div>
+        <div className="connection-grid">
+          {matches.map((match) => (
+            <article className="connection-card" key={match.id}>
+              <div className="score-ring">
+                <strong>{match.score}</strong>
+                <span>match score</span>
+              </div>
+              <Avatar person={match} size="large" />
+              <h2>{match.name}</h2>
+              <p>{match.details}</p>
+              <span className="relation-label">
+                <GitFork size={15} /> Possible branch overlap
+              </span>
+              <div className="why">
+                <strong>Shared clues</strong>
+                {match.shared.map((item) => (
+                  <span key={item}>
+                    <Check size={13} /> {item}
+                  </span>
+                ))}
+              </div>
+              <button
+                className="primary"
+                onClick={() => setReviewingFamily(match)}
+              >
+                Review family match
+              </button>
+            </article>
+          ))}
+        </div>
+        {!matches.length && (
+          <div className="panel empty compact-empty">
+            <Sparkles size={24} />
+            <h3>No family matches yet</h3>
+            <p>Add more surnames and places to improve branch matching.</p>
+          </div>
+        )}
+      </section>
+
+      {activity.length > 0 && (
+        <section className="connection-section">
+          <div className="subsection-heading">
+            <div>
+              <span className="mini-title">ACTIVITY</span>
+              <h2>Previous and outgoing requests</h2>
+            </div>
+          </div>
+          <div className="request-list">
+            {activity.slice(0, 20).map((item) => (
+              <article className="request-card slim" key={`${item.kind}-${item.request_id}`}>
+                <div>
+                  <strong>{item.counterpart_name}</strong>
+                  <span>
+                    {item.kind.replaceAll("_", " ")} · {item.direction} ·{" "}
+                    {item.status}
+                  </span>
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
       )}
-      {reviewing && (
+
+      {reviewingIdentity && (
         <div className="modal-wrap">
-          <button className="modal-scrim" onClick={() => setReviewing(null)} />
+          <button className="modal-scrim" onClick={() => setReviewingIdentity(null)} />
           <div className="review-modal">
-            <button className="modal-close" onClick={() => setReviewing(null)}>
+            <button className="modal-close" onClick={() => setReviewingIdentity(null)}>
               <X />
             </button>
             <span className="mini-title">
-              <ShieldCheck size={14} /> CONNECTION REVIEW
+              <ShieldCheck size={14} /> IDENTITY REVIEW
             </span>
-            <Avatar person={reviewing} size="large" />
-            <h2>Could {reviewing.name} be family?</h2>
+            <Avatar person={reviewingIdentity} size="large" />
+            <h2>Is this record you?</h2>
             <p>
-              Vansh found overlapping details in your private family records:
+              Requesting a claim does not link anything yet. The family member
+              who created this record must separately approve.
             </p>
             <div className="review-reasons">
-              {reviewing.shared.map((x) => (
-                <span key={x}>
-                  <Check size={15} /> Shared {x}
+              {reviewingIdentity.shared.map((item) => (
+                <span key={item}>
+                  <Check size={15} /> {item}
                 </span>
               ))}
             </div>
             <button
               className="primary"
-              onClick={async () => {
-                await connect(reviewing, "requested");
-                setReviewing(null);
-              }}
+              disabled={busyId === reviewingIdentity.id}
+              onClick={() =>
+                act(reviewingIdentity.id, async () => {
+                  await requestIdentity(reviewingIdentity);
+                  setReviewingIdentity(null);
+                })
+              }
             >
-              <HeartHandshake size={17} /> Send private connection request
+              <ShieldCheck size={17} /> Yes, request to claim this record
             </button>
             <button
               className="quiet"
-              onClick={async () => {
-                await connect(reviewing, "dismissed");
-                setReviewing(null);
-              }}
+              disabled={busyId === reviewingIdentity.id}
+              onClick={() =>
+                act(reviewingIdentity.id, async () => {
+                  await dismissIdentity(reviewingIdentity);
+                  setReviewingIdentity(null);
+                })
+              }
             >
-              Not a match
+              No, this is not me
+            </button>
+          </div>
+        </div>
+      )}
+
+      {reviewingFamily && (
+        <div className="modal-wrap">
+          <button className="modal-scrim" onClick={() => setReviewingFamily(null)} />
+          <div className="review-modal">
+            <button className="modal-close" onClick={() => setReviewingFamily(null)}>
+              <X />
+            </button>
+            <span className="mini-title">
+              <ShieldCheck size={14} /> FAMILY MATCH REVIEW
+            </span>
+            <Avatar person={reviewingFamily} size="large" />
+            <h2>Could these family branches overlap?</h2>
+            <p>
+              This sends a family connection request. It does not merge records
+              and does not establish anyone&apos;s identity.
+            </p>
+            <div className="review-reasons">
+              {reviewingFamily.shared.map((item) => (
+                <span key={item}>
+                  <Check size={15} /> {item}
+                </span>
+              ))}
+            </div>
+            <button
+              className="primary"
+              disabled={busyId === reviewingFamily.id}
+              onClick={() =>
+                act(reviewingFamily.id, async () => {
+                  await connect(reviewingFamily, "requested");
+                  setReviewingFamily(null);
+                })
+              }
+            >
+              <HeartHandshake size={17} /> Send family connection request
+            </button>
+            <button
+              className="quiet"
+              disabled={busyId === reviewingFamily.id}
+              onClick={() =>
+                act(reviewingFamily.id, async () => {
+                  await connect(reviewingFamily, "dismissed");
+                  setReviewingFamily(null);
+                })
+              }
+            >
+              Not a family match
             </button>
           </div>
         </div>
@@ -1675,9 +2119,9 @@ function InviteModal({ person, close }) {
             <h2>Invitation sent</h2>
             <p>
               When {person.firstName} signs in with <strong>{email}</strong>,
-              their existing family record and {sent.sharedPeople} connected{" "}
-              {sent.sharedPeople === 1 ? "person" : "people"} will appear
-              automatically.
+              Vansh will show this invitation in their verification inbox. Only
+              after they accept will this record and {sent.sharedPeople} connected{" "}
+              {sent.sharedPeople === 1 ? "person" : "people"} become available.
             </p>
             <button type="button" className="primary" onClick={close}>
               Close
@@ -1687,8 +2131,9 @@ function InviteModal({ person, close }) {
           <>
             <h2>Invite {person.firstName} to Vansh</h2>
             <p>
-              They will claim this existing person record. Shared details remain
-              live and synchronized rather than creating a copy.
+              This is a direct invitation for a person you already know. They
+              must explicitly accept before their account is linked to this
+              record or any shared family scope becomes visible.
             </p>
             <label className="auth-label">
               Their email address
@@ -1880,7 +2325,7 @@ function PlaceholderModal({
   );
 }
 
-function LinkPeopleModal({ people, close, linkPeople }) {
+function LinkPeopleModal({ people, relationships, close, linkPeople }) {
   const firstPerson =
     people.find((person) => !person.isPlaceholder) || people[0];
   const [personAId, setPersonAId] = useState(firstPerson?.id || "");
@@ -1892,10 +2337,18 @@ function LinkPeopleModal({ people, close, linkPeople }) {
   const [personBId, setPersonBId] = useState(availablePeople[0]?.id || "");
   const [relation, setRelation] = useState("parent-a");
   const [marriageYear, setMarriageYear] = useState("");
+  const [variant, setVariant] = useState("biological");
+  const [sharedParentIds, setSharedParentIds] = useState([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const personA = people.find((person) => person.id === personAId);
   const personB = people.find((person) => person.id === personBId);
+  const knownParentIds = [
+    ...new Set([
+      ...parentIdsFor(personAId, relationships),
+      ...parentIdsFor(personBId, relationships),
+    ]),
+  ];
 
   const changeFirstPerson = (event) => {
     const nextId = event.target.value;
@@ -1906,13 +2359,35 @@ function LinkPeopleModal({ people, close, linkPeople }) {
     );
     setPersonAId(nextId);
     setPersonBId(nextAvailable[0]?.id || "");
+    setSharedParentIds([]);
   };
+
+  const changeRelation = (event) => {
+    const value = event.target.value;
+    setRelation(value);
+    setSharedParentIds([]);
+    setVariant(
+      value === "parent-a" || value === "parent-b"
+        ? "biological"
+        : ["spouse", "partner"].includes(value)
+          ? "current"
+          : "reported",
+    );
+  };
+
   const submit = async (event) => {
     event.preventDefault();
     setSaving(true);
     setError("");
     try {
-      await linkPeople(personA, personB, relation, marriageYear);
+      await linkPeople(
+        personA,
+        personB,
+        relation,
+        marriageYear,
+        variant,
+        sharedParentIds,
+      );
       close();
     } catch (linkError) {
       setError(linkError.message);
@@ -1932,8 +2407,8 @@ function LinkPeopleModal({ people, close, linkPeople }) {
         </span>
         <h2>Add a missing relationship</h2>
         <p>
-          Choose two records already in this family graph and describe their
-          direct relationship.
+          Record the direct fact. Parent variants and partnership status remain
+          attached to the relationship, not to the person.
         </p>
         <div className="form-grid">
           <label>
@@ -1951,7 +2426,10 @@ function LinkPeopleModal({ people, close, linkPeople }) {
             <select
               required
               value={personBId}
-              onChange={(event) => setPersonBId(event.target.value)}
+              onChange={(event) => {
+                setPersonBId(event.target.value);
+                setSharedParentIds([]);
+              }}
             >
               {availablePeople.map((person) => (
                 <option value={person.id} key={person.id}>
@@ -1962,10 +2440,7 @@ function LinkPeopleModal({ people, close, linkPeople }) {
           </label>
           <label className="wide">
             Direct relationship
-            <select
-              value={relation}
-              onChange={(event) => setRelation(event.target.value)}
-            >
+            <select value={relation} onChange={changeRelation}>
               <option value="parent-a">
                 {personA?.firstName || "First person"} is parent of{" "}
                 {personB?.firstName || "second person"}
@@ -1979,27 +2454,86 @@ function LinkPeopleModal({ people, close, linkPeople }) {
               <option value="partner">They are partners</option>
             </select>
           </label>
-          {["spouse", "partner"].includes(relation) && (
+
+          {(relation === "parent-a" || relation === "parent-b") && (
             <label className="wide">
-              Year {relation === "spouse" ? "married" : "partnership began"}{" "}
-              <small>Optional</small>
-              <input
-                inputMode="numeric"
-                value={marriageYear}
-                onChange={(event) => setMarriageYear(event.target.value)}
-                placeholder="e.g. 1968"
-              />
+              Parent relationship type
+              <select value={variant} onChange={(event) => setVariant(event.target.value)}>
+                <option value="biological">Biological parent</option>
+                <option value="adoptive">Adoptive parent</option>
+                <option value="step">Step-parent</option>
+                <option value="guardian">Guardian / social parent</option>
+                <option value="unspecified">Not specified</option>
+              </select>
             </label>
           )}
+
+          {relation === "sibling" && knownParentIds.length > 0 && (
+            <fieldset className="suggested-links wide">
+              <legend>Which parent(s) do they share?</legend>
+              <p>
+                One selected parent records a half-sibling relationship. Two or
+                more selected parents records a full sibling relationship.
+              </p>
+              {knownParentIds.map((parentId) => {
+                const parent = people.find((person) => person.id === parentId);
+                return (
+                  <label key={parentId}>
+                    <input
+                      type="checkbox"
+                      checked={sharedParentIds.includes(parentId)}
+                      onChange={() =>
+                        setSharedParentIds((current) =>
+                          current.includes(parentId)
+                            ? current.filter((id) => id !== parentId)
+                            : [...current, parentId],
+                        )
+                      }
+                    />
+                    <span>
+                      <strong>{parent?.name || "Known parent"}</strong>
+                      <small>Shared parent</small>
+                    </span>
+                  </label>
+                );
+              })}
+            </fieldset>
+          )}
+
+          {["spouse", "partner"].includes(relation) && (
+            <>
+              <label>
+                Year {relation === "spouse" ? "married" : "partnership began"}{" "}
+                <small>Optional</small>
+                <input
+                  inputMode="numeric"
+                  value={marriageYear}
+                  onChange={(event) => setMarriageYear(event.target.value)}
+                  placeholder="e.g. 1968"
+                />
+              </label>
+              <label>
+                Relationship status
+                <select value={variant} onChange={(event) => setVariant(event.target.value)}>
+                  <option value="current">Current</option>
+                  <option value="former">Former</option>
+                  <option value="unspecified">Not specified</option>
+                </select>
+              </label>
+            </>
+          )}
         </div>
-        <div className="invite-notice">
-          <ShieldCheck size={17} />
-          <span>
-            <strong>Direct facts only</strong>
-            Link two people only when this relationship itself is known. Vansh
-            derives wider family paths from these direct facts.
-          </span>
-        </div>
+        {relation === "sibling" && !knownParentIds.length && (
+          <div className="invite-notice">
+            <CircleHelp size={17} />
+            <span>
+              <strong>Parents are not known yet</strong>
+              Vansh will store this as a reported sibling relationship. Once
+              parent links are added, full/half sibling status is derived from
+              shared parents.
+            </span>
+          </div>
+        )}
         {error && <div className="auth-message">{error}</div>}
         <div className="modal-actions">
           <button type="button" className="quiet" onClick={close}>
@@ -2012,6 +2546,211 @@ function LinkPeopleModal({ people, close, linkPeople }) {
               <Link2 size={16} />
             )}{" "}
             Link people
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function MergePeopleModal({ people, close, mergePeople }) {
+  const eligible = people.filter(
+    (person) =>
+      !person.isPlaceholder &&
+      !person.isClaimed &&
+      !person.isSelf &&
+      person.canEdit,
+  );
+  const [keepId, setKeepId] = useState(eligible[0]?.id || "");
+  const keep = people.find((person) => person.id === keepId);
+  const mergeOptions = eligible.filter(
+    (person) => person.id !== keepId && person.ownerId === keep?.ownerId,
+  );
+  const [mergeId, setMergeId] = useState(mergeOptions[0]?.id || "");
+  const merge = people.find((person) => person.id === mergeId);
+  const [choices, setChoices] = useState({});
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const changeKeep = (event) => {
+    const nextId = event.target.value;
+    const nextKeep = people.find((person) => person.id === nextId);
+    const nextMerge = eligible.find(
+      (person) => person.id !== nextId && person.ownerId === nextKeep?.ownerId,
+    );
+    setKeepId(nextId);
+    setMergeId(nextMerge?.id || "");
+    setChoices({});
+  };
+
+  const fields = keep && merge
+    ? [
+        ["first_name", "First name", keep.firstName, merge.firstName],
+        ["surname", "Surname", keep.surname, merge.surname],
+        ["nickname", "Nickname", keep.nickname, merge.nickname],
+        ["maiden_name", "Earlier surname", keep.maidenName, merge.maidenName],
+        ["gender", "Gender", keep.gender, merge.gender],
+        ["birth_date", "Date of birth", keep.birthDate, merge.birthDate],
+        ["birth_year", "Birth year", keep.birthYear, merge.birthYear],
+        ["birth_place", "Birth place", keep.birthPlace, merge.birthPlace],
+        ["lived_in", "Residence", keep.livedIn, merge.livedIn],
+      ]
+    : [];
+
+  const submit = async (event) => {
+    event.preventDefault();
+    if (!keep || !merge) return;
+    if (
+      !window.confirm(
+        `Merge ${merge.name} into ${keep.name}? The duplicate record will be removed after its relationships are transferred.`,
+      )
+    )
+      return;
+    setSaving(true);
+    setError("");
+    try {
+      await mergePeople(keep.id, merge.id, choices);
+      close();
+    } catch (mergeError) {
+      setError(mergeError.message);
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="modal-wrap">
+      <button className="modal-scrim" onClick={close} />
+      <form className="add-modal merge-modal" onSubmit={submit}>
+        <button type="button" className="modal-close" onClick={close}>
+          <X />
+        </button>
+        <span className="mini-title">
+          <Link2 size={15} /> DUPLICATE MERGE
+        </span>
+        <h2>Merge two unclaimed records</h2>
+        <p>
+          Choose the record to keep. Vansh transfers relationships and only
+          removes the duplicate after you review conflicting values.
+        </p>
+
+        {eligible.length < 2 ? (
+          <div className="privacy-banner">
+            <ShieldCheck size={20} />
+            <div>
+              <strong>No mergeable pair</strong>
+              <p>
+                Claimed profiles are deliberately excluded from automatic
+                merges.
+              </p>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="form-grid">
+              <label>
+                Keep this record
+                <select value={keepId} onChange={changeKeep}>
+                  {eligible.map((person) => (
+                    <option value={person.id} key={person.id}>
+                      {person.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Merge this duplicate into it
+                <select
+                  value={mergeId}
+                  onChange={(event) => {
+                    setMergeId(event.target.value);
+                    setChoices({});
+                  }}
+                >
+                  {mergeOptions.map((person) => (
+                    <option value={person.id} key={person.id}>
+                      {person.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+
+            {keep && merge && (
+              <div className="merge-comparison">
+                <div className="merge-head">
+                  <strong>Field</strong>
+                  <strong>Keep: {keep.name}</strong>
+                  <strong>Duplicate: {merge.name}</strong>
+                </div>
+                {fields.map(([key, label, keepValue, mergeValue]) => {
+                  const differs =
+                    String(keepValue || "") !== String(mergeValue || "");
+                  return (
+                    <div
+                      className={`merge-field ${differs ? "conflict" : ""}`}
+                      key={key}
+                    >
+                      <span>{label}</span>
+                      <label>
+                        <input
+                          type="radio"
+                          name={`merge-${key}`}
+                          checked={(choices[key] || "keep") === "keep"}
+                          onChange={() =>
+                            setChoices((current) => ({
+                              ...current,
+                              [key]: "keep",
+                            }))
+                          }
+                        />
+                        {keepValue || "—"}
+                      </label>
+                      <label>
+                        <input
+                          type="radio"
+                          name={`merge-${key}`}
+                          checked={choices[key] === "merge"}
+                          onChange={() =>
+                            setChoices((current) => ({
+                              ...current,
+                              [key]: "merge",
+                            }))
+                          }
+                        />
+                        {mergeValue || "—"}
+                      </label>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            <div className="invite-notice">
+              <ShieldCheck size={17} />
+              <span>
+                <strong>No silent merge</strong>
+                Claimed profiles cannot be merged here. Their identity link must
+                be resolved explicitly.
+              </span>
+            </div>
+          </>
+        )}
+
+        {error && <div className="auth-message">{error}</div>}
+        <div className="modal-actions">
+          <button type="button" className="quiet" onClick={close}>
+            Cancel
+          </button>
+          <button
+            className="primary"
+            disabled={saving || !keep || !merge || eligible.length < 2}
+          >
+            {saving ? (
+              <LoaderCircle className="spin" size={16} />
+            ) : (
+              <Link2 size={16} />
+            )}{" "}
+            Merge records
           </button>
         </div>
       </form>
@@ -2065,6 +2804,7 @@ function PersonModal({
     nickname: person?.nickname || "",
     surname: person?.surname || "",
     maidenName: person?.maidenName || "",
+    birthDate: person?.birthDate || "",
     birthYear: person?.birthYear || "",
     birthLocation: person?.birthLocation || null,
     livedLocations: person?.livedLocations || [],
@@ -2078,9 +2818,12 @@ function PersonModal({
     newSpouseName: "",
     spouseIsParent: true,
     marriageYear: "",
+    parentVariant: "biological",
+    partnershipVariant: "current",
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [duplicateCandidates, setDuplicateCandidates] = useState([]);
   const update = (e) => setForm({ ...form, [e.target.name]: e.target.value });
   const updateRelation = (event) => {
     const relation = RELATION_OPTIONS.find(
@@ -2133,8 +2876,29 @@ function PersonModal({
     if (step === 1) return setStep(2);
     setSaving(true);
     setError("");
+    setDuplicateCandidates([]);
     try {
-      await savePerson(form, person);
+      const result = await savePerson(form, person);
+      if (result?.duplicates?.length) {
+        setDuplicateCandidates(result.duplicates);
+        setSaving(false);
+        return;
+      }
+      close();
+    } catch (saveError) {
+      setError(saveError.message);
+      setSaving(false);
+    }
+  };
+
+  const resolveDuplicate = async (candidateId = null) => {
+    setSaving(true);
+    setError("");
+    try {
+      await savePerson(form, person, {
+        skipDuplicateCheck: true,
+        useExistingId: candidateId,
+      });
       close();
     } catch (saveError) {
       setError(saveError.message);
@@ -2154,7 +2918,11 @@ function PersonModal({
           <span className={step === 2 ? "active" : ""}>2</span>
         </div>
         <span className="eyebrow">
-          {person ? "EDIT FAMILY MEMBER" : `STEP ${step} OF 2`}
+          {person
+            ? person.canSuggest
+              ? "SUGGEST CORRECTION"
+              : "EDIT FAMILY MEMBER"
+            : `STEP ${step} OF 2`}
         </span>
         <h2>
           {step === 1
@@ -2166,7 +2934,9 @@ function PersonModal({
         <p>
           {step === 1
             ? person
-              ? "Names can be corrected whenever your family learns more."
+              ? person.canSuggest
+                ? "This person has claimed their profile. Your changes will be sent to them for approval."
+                : "You control the identity details on this profile."
               : "Choose a direct relationship to an existing person so Vansh can place them accurately."
             : "Select locations from the city and country results. Typed search text is never saved."}
         </p>
@@ -2255,6 +3025,26 @@ function PersonModal({
                       ))}
                     </select>
                   </label>
+                  {selectedRelation?.type === "parent" && (
+                    <label className="wide">
+                      Parent relationship type
+                      <select
+                        value={form.parentVariant}
+                        onChange={(event) =>
+                          setForm((current) => ({
+                            ...current,
+                            parentVariant: event.target.value,
+                          }))
+                        }
+                      >
+                        <option value="biological">Biological parent</option>
+                        <option value="adoptive">Adoptive parent</option>
+                        <option value="step">Step-parent</option>
+                        <option value="guardian">Guardian / social parent</option>
+                        <option value="unspecified">Not specified</option>
+                      </select>
+                    </label>
+                  )}
                   {["spouse", "partner"].includes(selectedRelation?.type) && (
                     <label className="wide">
                       Year{" "}
@@ -2275,12 +3065,34 @@ function PersonModal({
                       />
                     </label>
                   )}
+                  {["spouse", "partner"].includes(selectedRelation?.type) && (
+                    <label className="wide">
+                      Relationship status
+                      <select
+                        value={form.partnershipVariant}
+                        onChange={(event) =>
+                          setForm((current) => ({
+                            ...current,
+                            partnershipVariant: event.target.value,
+                          }))
+                        }
+                      >
+                        <option value="current">Current</option>
+                        <option value="former">Former</option>
+                        <option value="unspecified">Not specified</option>
+                      </select>
+                    </label>
+                  )}
                   {suggestedLinks.suggestedParentIds.length > 0 && (
                     <fieldset className="suggested-links wide">
-                      <legend>Suggested parent links</legend>
+                      <legend>
+                        {selectedRelation?.type === "sibling"
+                          ? "Which parent(s) do they share?"
+                          : "Suggested parent links"}
+                      </legend>
                       <p>
                         {selectedRelation?.type === "sibling"
-                          ? `${anchorPerson?.firstName || "This person"}'s known parents are preselected because siblings usually share them.`
+                          ? "Select one shared parent for a half-sibling or two/more shared parents for a full sibling. Vansh derives sibling type from these parent links."
                           : `Known partners of ${anchorPerson?.firstName || "this person"} are suggested as additional parents.`}
                       </p>
                       {suggestedLinks.suggestedParentIds.map((parentId) => {
@@ -2428,11 +3240,22 @@ function PersonModal({
         ) : (
           <div className="form-grid">
             <label>
-              Birth year <small>Approximate is okay</small>
+              Date of birth <small>If known</small>
+              <input
+                type="date"
+                name="birthDate"
+                value={form.birthDate}
+                onChange={update}
+                max={new Date().toISOString().slice(0, 10)}
+              />
+            </label>
+            <label>
+              Birth year <small>{form.birthDate ? "Derived from exact date" : "Approximate is okay"}</small>
               <input
                 name="birthYear"
-                value={form.birthYear}
+                value={form.birthDate ? form.birthDate.slice(0, 4) : form.birthYear}
                 onChange={update}
+                disabled={Boolean(form.birthDate)}
                 placeholder="e.g. 1942"
               />
             </label>
@@ -2470,6 +3293,45 @@ function PersonModal({
             </label>
           </div>
         )}
+        {duplicateCandidates.length > 0 && (
+          <div className="duplicate-review">
+            <div className="privacy-banner warning">
+              <CircleHelp size={20} />
+              <div>
+                <strong>A similar person already exists</strong>
+                <p>
+                  Review the existing record before creating another copy.
+                  Nothing is merged automatically.
+                </p>
+              </div>
+            </div>
+            {duplicateCandidates.map((candidate) => (
+              <div className="duplicate-row" key={candidate.id}>
+                <div>
+                  <strong>{candidate.name}</strong>
+                  <span>{candidate.details}</span>
+                  <small>{candidate.score} match score{candidate.claimed ? " · claimed profile" : ""}</small>
+                </div>
+                <button
+                  type="button"
+                  className="quiet"
+                  disabled={saving}
+                  onClick={() => resolveDuplicate(candidate.id)}
+                >
+                  Use existing
+                </button>
+              </div>
+            ))}
+            <button
+              type="button"
+              className="quiet create-anyway"
+              disabled={saving}
+              onClick={() => resolveDuplicate(null)}
+            >
+              Create a separate person anyway
+            </button>
+          </div>
+        )}
         {error && <div className="auth-message">{error}</div>}
         <div className="modal-actions">
           {step === 2 && (
@@ -2488,7 +3350,11 @@ function PersonModal({
               </>
             ) : (
               <>
-                {person ? "Save corrections" : "Place in family map"}{" "}
+                {person
+                  ? person.canSuggest
+                    ? "Send correction for approval"
+                    : "Save changes"
+                  : "Place in family map"}{" "}
                 <Check size={16} />
               </>
             )}
@@ -2508,6 +3374,8 @@ function FamilyApp({ session }) {
   const [people, setPeople] = useState([]);
   const [relationships, setRelationships] = useState([]);
   const [matches, setMatches] = useState([]);
+  const [identityCandidates, setIdentityCandidates] = useState([]);
+  const [inbox, setInbox] = useState([]);
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(true);
   const [dataError, setDataError] = useState("");
@@ -2516,6 +3384,7 @@ function FamilyApp({ session }) {
   const [inviting, setInviting] = useState(null);
   const [placeholdersFor, setPlaceholdersFor] = useState(null);
   const [linkingPeople, setLinkingPeople] = useState(false);
+  const [mergingPeople, setMergingPeople] = useState(false);
   const [showNotes, setShowNotes] = useState(false);
   const [menu, setMenu] = useState(false);
   const [query, setQuery] = useState("");
@@ -2523,7 +3392,6 @@ function FamilyApp({ session }) {
   useEffect(() => {
     let active = true;
     const loadFamily = async () => {
-      await supabase.rpc("accept_family_invitations");
       const [profileResult, peopleResult, relationshipsResult] =
         await Promise.all([
           supabase
@@ -2558,10 +3426,19 @@ function FamilyApp({ session }) {
           .from("family_members")
           .insert({
             owner_id: session.user.id,
+            created_by: session.user.id,
             linked_user_id: session.user.id,
-            first_name: parts[0] || "Me",
-            surname: session.user.user_metadata.family_surname,
-            lived_in: profileResult.data.location || null,
+            first_name: profileResult.data.first_name || parts[0] || "Me",
+            surname: profileResult.data.surname || session.user.user_metadata.family_surname,
+            birth_date: profileResult.data.birth_date || null,
+            birth_year: profileResult.data.birth_date
+              ? Number(profileResult.data.birth_date.slice(0, 4))
+              : null,
+            birth_place: profileResult.data.birth_location_text || null,
+            lived_in:
+              profileResult.data.current_location_text ||
+              profileResult.data.location ||
+              null,
             family_side: "You",
             is_self: true,
           })
@@ -2576,7 +3453,11 @@ function FamilyApp({ session }) {
         }
         rows = [selfResult.data];
       }
-      const matchResult = await supabase.rpc("find_family_matches");
+      const [matchResult, identityResult, inboxResult] = await Promise.all([
+        supabase.rpc("find_family_matches"),
+        supabase.rpc("find_identity_claim_candidates"),
+        supabase.rpc("get_verification_inbox"),
+      ]);
       if (!active) return;
       setProfile(profileResult.data);
       setPeople(
@@ -2588,7 +3469,9 @@ function FamilyApp({ session }) {
           from: row.person_a_id,
           to: row.person_b_id,
           type: row.relationship_type,
+          variant: row.relationship_variant || "unspecified",
           startYear: row.start_year,
+          endYear: row.end_year,
         })),
       );
       setMatches(
@@ -2615,6 +3498,31 @@ function FamilyApp({ session }) {
               .join(" · ") || "Limited details shared",
         })),
       );
+      setIdentityCandidates(
+        (identityResult.data || []).map((row, index) => ({
+          id: row.candidate_member_id,
+          personCode: row.person_code,
+          name: row.display_name,
+          initials: row.display_name
+            .split(/\s+/)
+            .map((part) => part[0])
+            .slice(0, 2)
+            .join("")
+            .toUpperCase(),
+          color: colors[(index + 2) % colors.length],
+          score: row.score,
+          shared: row.shared_details || [],
+          details:
+            [
+              row.birth_year && `Born ${row.birth_year}`,
+              row.birth_place,
+              row.lived_in && `lived in ${row.lived_in}`,
+            ]
+              .filter(Boolean)
+              .join(" · ") || "Limited details shared",
+        })),
+      );
+      setInbox(inboxResult.data || []);
       setLoading(false);
     };
     loadFamily();
@@ -2623,236 +3531,12 @@ function FamilyApp({ session }) {
     };
   }, [session.user.id, session.user.user_metadata.family_surname]);
 
-  const savePerson = async (form, existing) => {
-    const self = people.find((person) => person.isSelf);
-    if (!self)
-      throw new Error(
-        "Your own family profile is still being prepared. Please refresh and try again.",
-      );
-    const anchorPerson = existing
-      ? null
-      : people.find((person) => person.id === form.anchorId);
-    if (!existing && !anchorPerson)
-      throw new Error(
-        "Choose an existing family member to connect this person to.",
-      );
-    if (
-      form.marriageYear &&
-      (!/^\d{4}$/.test(form.marriageYear) ||
-        Number(form.marriageYear) < 1800 ||
-        Number(form.marriageYear) > new Date().getFullYear())
-    )
-      throw new Error("Enter a valid four-digit marriage year.");
-    const currentYear = new Date().getFullYear();
-    const livedLocations = form.livedLocations.map((location) => {
-      const startYear = location.startYear ? Number(location.startYear) : null;
-      const endYear = location.endYear ? Number(location.endYear) : null;
-      for (const [label, value] of [
-        ["From", location.startYear],
-        ["To", location.endYear],
-      ]) {
-        if (
-          value &&
-          (!/^\d{4}$/.test(String(value)) ||
-            Number(value) < 1800 ||
-            Number(value) > currentYear)
-        )
-          throw new Error(
-            `${label} year for ${location.display} must be a valid four-digit year.`,
-          );
-      }
-      if (startYear && endYear && startYear > endYear)
-        throw new Error(
-          `The From year for ${location.display} cannot be after its To year.`,
-        );
-      return { ...location, startYear, endYear };
-    });
-    const payload = {
-      owner_id:
-        existing?.ownerId ||
-        anchorPerson?.ownerId ||
-        self.ownerId ||
-        session.user.id,
-      first_name: form.firstName.trim(),
-      surname: form.surname.trim(),
-      nickname: form.nickname.trim() || null,
-      maiden_name: form.maidenName.trim() || null,
-      gender: form.gender,
-      birth_year: form.birthYear ? Number(form.birthYear) : null,
-      birth_location: form.birthLocation,
-      lived_locations: livedLocations,
-      birth_place:
-        form.birthLocation?.display || existing?.legacyBirthPlace || null,
-      lived_in: livedLocations[0]?.display || existing?.legacyLivedIn || null,
-      family_side: form.side,
-    };
-    if (existing?.isPlaceholder) {
-      payload.is_placeholder = false;
-      payload.placeholder_label = null;
-      payload.filled_by = session.user.id;
-    }
-    const memberResult = existing
-      ? await supabase
-          .from("family_members")
-          .update(payload)
-          .eq("id", existing.id)
-          .select()
-          .single()
-      : await supabase
-          .from("family_members")
-          .insert({ ...payload, created_by: session.user.id })
-          .select()
-          .single();
-    if (memberResult.error) throw memberResult.error;
-    const personIndex = existing
-      ? people.findIndex((person) => person.id === existing.id)
-      : people.length;
-    const savedPerson = personFromRow(
-      memberResult.data,
-      personIndex,
-      session.user.id,
-    );
-    if (existing) {
-      setPeople((current) =>
-        current.map((person) =>
-          person.id === existing.id ? savedPerson : person,
-        ),
-      );
-    } else {
-      const relation = RELATION_OPTIONS.find(
-        (option) => option.value === form.relation,
-      );
-      if (!relation) throw new Error("Choose a relationship.");
-      const personAId =
-        relation.direction === "from-anchor"
-          ? anchorPerson.id
-          : memberResult.data.id;
-      const personBId =
-        relation.direction === "from-anchor"
-          ? memberResult.data.id
-          : anchorPerson.id;
-      let spouseMember = null;
-      if (form.spouseMode === "new") {
-        const nameParts = form.newSpouseName
-          .trim()
-          .split(/\s+/)
-          .filter(Boolean);
-        if (!nameParts.length) {
-          await supabase
-            .from("family_members")
-            .delete()
-            .eq("id", memberResult.data.id);
-          throw new Error("Enter the spouse's name.");
-        }
-        const spouseResult = await supabase
-          .from("family_members")
-          .insert({
-            owner_id: anchorPerson.ownerId,
-            created_by: session.user.id,
-            first_name:
-              nameParts.length > 1
-                ? nameParts.slice(0, -1).join(" ")
-                : nameParts[0],
-            surname:
-              nameParts.length > 1 ? nameParts.at(-1) : form.surname.trim(),
-            family_side: form.side,
-            gender: "unspecified",
-          })
-          .select()
-          .single();
-        if (spouseResult.error) {
-          await supabase
-            .from("family_members")
-            .delete()
-            .eq("id", memberResult.data.id);
-          throw spouseResult.error;
-        }
-        spouseMember = spouseResult.data;
-      }
-      const relationshipRows = [
-        {
-          owner_id: anchorPerson.ownerId,
-          created_by: session.user.id,
-          person_a_id: personAId,
-          person_b_id: personBId,
-          relationship_type: relation.type,
-          start_year:
-            ["spouse", "partner"].includes(relation.type) && form.marriageYear
-              ? Number(form.marriageYear)
-              : null,
-        },
-        ...form.parentIds
-          .filter(
-            (parentId) =>
-              !(personAId === parentId && personBId === memberResult.data.id),
-          )
-          .map((parentId) => ({
-            owner_id: anchorPerson.ownerId,
-            created_by: session.user.id,
-            person_a_id: parentId,
-            person_b_id: memberResult.data.id,
-            relationship_type: "parent",
-            start_year: null,
-          })),
-      ];
-      const spouseId =
-        form.spouseMode === "existing" ? form.spouseId : spouseMember?.id;
-      if (spouseId) {
-        relationshipRows.push({
-          owner_id: anchorPerson.ownerId,
-          created_by: session.user.id,
-          person_a_id: memberResult.data.id,
-          person_b_id: spouseId,
-          relationship_type: "spouse",
-          start_year: form.marriageYear ? Number(form.marriageYear) : null,
-        });
-        if (
-          spouseMember &&
-          form.spouseIsParent &&
-          relation.type === "parent" &&
-          relation.direction === "to-anchor"
-        ) {
-          relationshipRows.push({
-            owner_id: anchorPerson.ownerId,
-            created_by: session.user.id,
-            person_a_id: spouseMember.id,
-            person_b_id: anchorPerson.id,
-            relationship_type: "parent",
-            start_year: null,
-          });
-        }
-      }
-      const relationshipResult = await supabase
-        .from("relationships")
-        .insert(relationshipRows)
-        .select();
-      if (relationshipResult.error) {
-        await supabase
-          .from("family_members")
-          .delete()
-          .in("id", [memberResult.data.id, spouseMember?.id].filter(Boolean));
-        throw relationshipResult.error;
-      }
-      const savedSpouse = spouseMember
-        ? personFromRow(spouseMember, people.length + 1, session.user.id)
-        : null;
-      setPeople((current) => [
-        ...current,
-        savedPerson,
-        ...(savedSpouse ? [savedSpouse] : []),
-      ]);
-      setRelationships((current) => [
-        ...current,
-        ...relationshipResult.data.map((relationship) => ({
-          id: relationship.id,
-          from: relationship.person_a_id,
-          to: relationship.person_b_id,
-          type: relationship.relationship_type,
-          startYear: relationship.start_year,
-        })),
-      ]);
-    }
-    const matchResult = await supabase.rpc("find_family_matches");
+  const refreshTrustData = async () => {
+    const [matchResult, identityResult, inboxResult] = await Promise.all([
+      supabase.rpc("find_family_matches"),
+      supabase.rpc("find_identity_claim_candidates"),
+      supabase.rpc("get_verification_inbox"),
+    ]);
     if (!matchResult.error)
       setMatches(
         (matchResult.data || []).map((row, index) => ({
@@ -2878,29 +3562,492 @@ function FamilyApp({ session }) {
               .join(" · ") || "Limited details shared",
         })),
       );
+    if (!identityResult.error)
+      setIdentityCandidates(
+        (identityResult.data || []).map((row, index) => ({
+          id: row.candidate_member_id,
+          personCode: row.person_code,
+          name: row.display_name,
+          initials: row.display_name
+            .split(/\s+/)
+            .map((part) => part[0])
+            .slice(0, 2)
+            .join("")
+            .toUpperCase(),
+          color: colors[(index + 2) % colors.length],
+          score: row.score,
+          shared: row.shared_details || [],
+          details:
+            [
+              row.birth_year && `Born ${row.birth_year}`,
+              row.birth_place,
+              row.lived_in && `lived in ${row.lived_in}`,
+            ]
+              .filter(Boolean)
+              .join(" · ") || "Limited details shared",
+        })),
+      );
+    if (!inboxResult.error) setInbox(inboxResult.data || []);
+  };
+
+  const refreshFamilyData = async () => {
+    const [peopleResult, relationshipsResult] = await Promise.all([
+      supabase.from("family_members").select("*").order("created_at"),
+      supabase.from("relationships").select("*").order("created_at"),
+    ]);
+    if (peopleResult.error) throw peopleResult.error;
+    if (relationshipsResult.error) throw relationshipsResult.error;
+    setPeople(
+      peopleResult.data.map((row, index) =>
+        personFromRow(row, index, session.user.id),
+      ),
+    );
+    setRelationships(
+      relationshipsResult.data.map((row) => ({
+        id: row.id,
+        from: row.person_a_id,
+        to: row.person_b_id,
+        type: row.relationship_type,
+        variant: row.relationship_variant || "unspecified",
+        startYear: row.start_year,
+        endYear: row.end_year,
+      })),
+    );
+    await refreshTrustData();
+  };
+
+  const savePerson = async (form, existing, options = {}) => {
+    const self = people.find((person) => person.isSelf);
+    if (!self)
+      throw new Error(
+        "Your own family profile is still being prepared. Please refresh and try again.",
+      );
+
+    const anchorPerson = existing
+      ? null
+      : people.find((person) => person.id === form.anchorId);
+    if (!existing && !anchorPerson)
+      throw new Error(
+        "Choose an existing family member to connect this person to.",
+      );
+
+    const today = new Date();
+    const currentYear = today.getFullYear();
+    if (form.birthDate) {
+      const parsedBirthDate = new Date(`${form.birthDate}T00:00:00`);
+      if (
+        Number.isNaN(parsedBirthDate.getTime()) ||
+        parsedBirthDate.getFullYear() < 1800 ||
+        parsedBirthDate > today
+      )
+        throw new Error("Enter a valid date of birth.");
+    }
+    const effectiveBirthYear = form.birthDate
+      ? Number(form.birthDate.slice(0, 4))
+      : form.birthYear
+        ? Number(form.birthYear)
+        : null;
+    if (
+      effectiveBirthYear &&
+      (!/^\d{4}$/.test(String(effectiveBirthYear)) ||
+        effectiveBirthYear < 1800 ||
+        effectiveBirthYear > currentYear)
+    )
+      throw new Error("Enter a valid four-digit birth year.");
+
+    if (
+      form.marriageYear &&
+      (!/^\d{4}$/.test(form.marriageYear) ||
+        Number(form.marriageYear) < 1800 ||
+        Number(form.marriageYear) > currentYear)
+    )
+      throw new Error("Enter a valid four-digit marriage year.");
+
+    const livedLocations = form.livedLocations.map((location) => {
+      const startYear = location.startYear ? Number(location.startYear) : null;
+      const endYear = location.endYear ? Number(location.endYear) : null;
+      for (const [label, value] of [
+        ["From", location.startYear],
+        ["To", location.endYear],
+      ]) {
+        if (
+          value &&
+          (!/^\d{4}$/.test(String(value)) ||
+            Number(value) < 1800 ||
+            Number(value) > currentYear)
+        )
+          throw new Error(
+            `${label} year for ${location.display} must be a valid four-digit year.`,
+          );
+      }
+      if (startYear && endYear && startYear > endYear)
+        throw new Error(
+          `The From year for ${location.display} cannot be after its To year.`,
+        );
+      return { ...location, startYear, endYear };
+    });
+
+    const payload = {
+      owner_id:
+        existing?.ownerId ||
+        anchorPerson?.ownerId ||
+        self.ownerId ||
+        session.user.id,
+      first_name: form.firstName.trim(),
+      surname: form.surname.trim(),
+      nickname: form.nickname.trim() || null,
+      maiden_name: form.maidenName.trim() || null,
+      gender: form.gender,
+      birth_date: form.birthDate || null,
+      birth_year: effectiveBirthYear,
+      birth_location: form.birthLocation,
+      lived_locations: livedLocations,
+      birth_place:
+        form.birthLocation?.display || existing?.legacyBirthPlace || null,
+      lived_in: livedLocations[0]?.display || existing?.legacyLivedIn || null,
+      family_side: form.side,
+    };
+
+    if (!payload.first_name || !payload.surname)
+      throw new Error("First name and surname are required.");
+
+    // Claimed people control their own identity fields. Other relatives can
+    // propose changes, but cannot overwrite those fields directly.
+    if (existing?.canSuggest) {
+      const proposed = {
+        first_name: payload.first_name,
+        surname: payload.surname,
+        nickname: payload.nickname,
+        maiden_name: payload.maiden_name,
+        gender: payload.gender,
+        birth_date: payload.birth_date,
+        birth_year: payload.birth_year,
+        birth_location: payload.birth_location,
+        lived_locations: payload.lived_locations,
+        birth_place: payload.birth_place,
+        lived_in: payload.lived_in,
+      };
+      const current = {
+        first_name: existing.firstName,
+        surname: existing.surname,
+        nickname: existing.nickname || null,
+        maiden_name: existing.maidenName || null,
+        gender: existing.gender,
+        birth_date: existing.birthDate || null,
+        birth_year: existing.birthYear ? Number(existing.birthYear) : null,
+        birth_location: existing.birthLocation,
+        lived_locations: existing.livedLocations,
+        birth_place: existing.birthPlace || null,
+        lived_in: existing.livedLocations?.[0]?.display || existing.legacyLivedIn || null,
+      };
+      const changes = Object.fromEntries(
+        Object.entries(proposed).filter(
+          ([key, value]) =>
+            JSON.stringify(value ?? null) !== JSON.stringify(current[key] ?? null),
+        ),
+      );
+      if (!Object.keys(changes).length) return { suggested: false };
+      const suggestion = await supabase.rpc("suggest_member_correction", {
+        p_member_id: existing.id,
+        p_changes: changes,
+      });
+      if (suggestion.error) throw suggestion.error;
+      await refreshTrustData();
+      return { suggested: true };
+    }
+
+    if (!existing && !options.skipDuplicateCheck) {
+      const duplicateResult = await supabase.rpc("find_duplicate_members", {
+        p_owner_id: anchorPerson.ownerId,
+        p_first_name: payload.first_name,
+        p_surname: payload.surname,
+        p_birth_date: payload.birth_date,
+        p_birth_year: payload.birth_year,
+        p_birth_place: payload.birth_place,
+        p_exclude_id: null,
+      });
+      if (duplicateResult.error) throw duplicateResult.error;
+      if (duplicateResult.data?.length)
+        return {
+          duplicates: duplicateResult.data.map((row) => ({
+            id: row.member_id,
+            name: row.display_name,
+            score: row.score,
+            claimed: row.claimed,
+            details:
+              [
+                row.birth_year && `Born ${row.birth_year}`,
+                row.birth_place,
+                row.lived_in && `lived in ${row.lived_in}`,
+              ]
+                .filter(Boolean)
+                .join(" · ") || "No additional details recorded",
+          })),
+        };
+    }
+
+    const relation = !existing
+      ? RELATION_OPTIONS.find((option) => option.value === form.relation)
+      : null;
+    if (!existing && !relation) throw new Error("Choose a relationship.");
+
+    const createRelationshipBundle = async (memberId) => {
+      let spouseMember = null;
+      if (form.spouseMode === "new") {
+        const nameParts = form.newSpouseName
+          .trim()
+          .split(/\s+/)
+          .filter(Boolean);
+        if (!nameParts.length) throw new Error("Enter the spouse's name.");
+        const spouseResult = await supabase
+          .from("family_members")
+          .insert({
+            owner_id: anchorPerson.ownerId,
+            created_by: session.user.id,
+            first_name:
+              nameParts.length > 1
+                ? nameParts.slice(0, -1).join(" ")
+                : nameParts[0],
+            surname:
+              nameParts.length > 1 ? nameParts.at(-1) : payload.surname,
+            family_side: form.side,
+            gender: "unspecified",
+          })
+          .select()
+          .single();
+        if (spouseResult.error) throw spouseResult.error;
+        spouseMember = spouseResult.data;
+      }
+
+      const rows = [];
+      const pushRelationship = (row) => {
+        const symmetric = ["sibling", "spouse", "partner"].includes(
+          row.relationship_type,
+        );
+        const alreadyExists = relationships.some(
+          (item) =>
+            item.type === row.relationship_type &&
+            ((item.from === row.person_a_id && item.to === row.person_b_id) ||
+              (symmetric &&
+                item.from === row.person_b_id &&
+                item.to === row.person_a_id)),
+        );
+        const alreadyQueued = rows.some(
+          (item) =>
+            item.relationship_type === row.relationship_type &&
+            ((item.person_a_id === row.person_a_id &&
+              item.person_b_id === row.person_b_id) ||
+              (symmetric &&
+                item.person_a_id === row.person_b_id &&
+                item.person_b_id === row.person_a_id)),
+        );
+        if (!alreadyExists && !alreadyQueued) rows.push(row);
+      };
+
+      const base = {
+        owner_id: anchorPerson.ownerId,
+        created_by: session.user.id,
+      };
+
+      if (relation.type === "sibling") {
+        const knownParents = parentIdsFor(anchorPerson.id, relationships);
+        if (knownParents.length && !form.parentIds.length)
+          throw new Error(
+            "Choose at least one shared parent. One shared parent creates a half-sibling relationship; two or more creates a full-sibling relationship.",
+          );
+        if (!form.parentIds.length) {
+          pushRelationship({
+            ...base,
+            person_a_id: memberId,
+            person_b_id: anchorPerson.id,
+            relationship_type: "sibling",
+            relationship_variant: "reported",
+            start_year: null,
+          });
+        }
+      } else {
+        const personAId =
+          relation.direction === "from-anchor" ? anchorPerson.id : memberId;
+        const personBId =
+          relation.direction === "from-anchor" ? memberId : anchorPerson.id;
+        pushRelationship({
+          ...base,
+          person_a_id: personAId,
+          person_b_id: personBId,
+          relationship_type: relation.type,
+          relationship_variant:
+            relation.type === "parent"
+              ? form.parentVariant || "biological"
+              : ["spouse", "partner"].includes(relation.type)
+                ? form.partnershipVariant || "current"
+                : "unspecified",
+          start_year:
+            ["spouse", "partner"].includes(relation.type) && form.marriageYear
+              ? Number(form.marriageYear)
+              : null,
+        });
+      }
+
+      form.parentIds.forEach((parentId) => {
+        const anchorParent = relationships.find(
+          (item) =>
+            item.type === "parent" &&
+            item.from === parentId &&
+            item.to === anchorPerson.id,
+        );
+        pushRelationship({
+          ...base,
+          person_a_id: parentId,
+          person_b_id: memberId,
+          relationship_type: "parent",
+          relationship_variant: anchorParent?.variant || "biological",
+          start_year: null,
+        });
+      });
+
+      const spouseId =
+        form.spouseMode === "existing" ? form.spouseId : spouseMember?.id;
+      if (spouseId) {
+        pushRelationship({
+          ...base,
+          person_a_id: memberId,
+          person_b_id: spouseId,
+          relationship_type: "spouse",
+          relationship_variant: form.partnershipVariant || "current",
+          start_year: form.marriageYear ? Number(form.marriageYear) : null,
+        });
+        if (
+          spouseMember &&
+          form.spouseIsParent &&
+          relation.type === "parent" &&
+          relation.direction === "to-anchor"
+        ) {
+          pushRelationship({
+            ...base,
+            person_a_id: spouseMember.id,
+            person_b_id: anchorPerson.id,
+            relationship_type: "parent",
+            relationship_variant: form.parentVariant || "biological",
+            start_year: null,
+          });
+        }
+      }
+
+      if (rows.length) {
+        const relationshipResult = await supabase
+          .from("relationships")
+          .insert(rows)
+          .select();
+        if (relationshipResult.error) throw relationshipResult.error;
+      }
+      return spouseMember;
+    };
+
+    if (existing) {
+      if (existing.isPlaceholder) {
+        payload.is_placeholder = false;
+        payload.placeholder_label = null;
+        payload.filled_by = session.user.id;
+      }
+      const memberResult = await supabase
+        .from("family_members")
+        .update(payload)
+        .eq("id", existing.id)
+        .select()
+        .single();
+      if (memberResult.error) throw memberResult.error;
+      await refreshFamilyData();
+      return { updated: true };
+    }
+
+    if (options.useExistingId) {
+      const duplicate = people.find(
+        (person) =>
+          person.id === options.useExistingId &&
+          person.ownerId === anchorPerson.ownerId,
+      );
+      if (!duplicate)
+        throw new Error("That existing record is no longer available.");
+      await createRelationshipBundle(duplicate.id);
+      await refreshFamilyData();
+      return { reused: true };
+    }
+
+    const memberResult = await supabase
+      .from("family_members")
+      .insert({ ...payload, created_by: session.user.id })
+      .select()
+      .single();
+    if (memberResult.error) throw memberResult.error;
+
+    try {
+      await createRelationshipBundle(memberResult.data.id);
+    } catch (relationshipError) {
+      await supabase.from("family_members").delete().eq("id", memberResult.data.id);
+      throw relationshipError;
+    }
+
+    await refreshFamilyData();
+    return { created: true };
   };
 
   const connect = async (match, status) => {
-    const result = await supabase.from("match_decisions").insert({
-      owner_id: session.user.id,
-      candidate_owner_id: match.ownerId,
-      candidate_member_id: match.id,
-      status,
+    const result =
+      status === "requested"
+        ? await supabase.rpc("request_family_match", {
+            p_candidate_member_id: match.id,
+          })
+        : await supabase.rpc("dismiss_family_match", {
+            p_candidate_member_id: match.id,
+          });
+    if (result.error) throw result.error;
+    await refreshTrustData();
+  };
+
+  const requestIdentity = async (candidate) => {
+    const result = await supabase.rpc("request_identity_claim", {
+      p_candidate_member_id: candidate.id,
     });
     if (result.error) throw result.error;
-    setMatches((current) => current.filter((item) => item.id !== match.id));
+    await refreshTrustData();
+  };
+
+  const dismissIdentity = async (candidate) => {
+    const result = await supabase.rpc("dismiss_identity_candidate", {
+      p_candidate_member_id: candidate.id,
+    });
+    if (result.error) throw result.error;
+    await refreshTrustData();
+  };
+
+  const respondInbox = async (item, accept) => {
+    const result =
+      item.kind === "invitation"
+        ? await supabase.rpc("respond_family_invitation", {
+            p_invitation_id: item.request_id,
+            p_accept: accept,
+          })
+        : await supabase.rpc("respond_verification_request", {
+            p_kind: item.kind,
+            p_request_id: item.request_id,
+            p_accept: accept,
+          });
+    if (result.error) throw result.error;
+    await refreshFamilyData();
+  };
+
+  const mergePeople = async (keepId, mergeId, fieldChoices) => {
+    const result = await supabase.rpc("merge_family_members", {
+      p_keep_id: keepId,
+      p_merge_id: mergeId,
+      p_field_choices: fieldChoices,
+    });
+    if (result.error) throw result.error;
+    await refreshFamilyData();
   };
   const addPlaceholders = async (anchor, totalCount) => {
     const siblingIds = new Set(
-      relationships
-        .filter(
-          (relationship) =>
-            relationship.type === "sibling" &&
-            (relationship.from === anchor.id || relationship.to === anchor.id),
-        )
-        .map((relationship) =>
-          relationship.from === anchor.id ? relationship.to : relationship.from,
-        ),
+      siblingDetailsFor(anchor.id, relationships).map((sibling) => sibling.id),
     );
     const missingCount = Math.max(0, totalCount - siblingIds.size);
     if (!missingCount) return;
@@ -2931,6 +4078,7 @@ function FamilyApp({ session }) {
           person_a_id: member.id,
           person_b_id: anchor.id,
           relationship_type: "sibling",
+          relationship_variant: "reported",
         })),
       )
       .select();
@@ -2957,15 +4105,25 @@ function FamilyApp({ session }) {
         from: relationship.person_a_id,
         to: relationship.person_b_id,
         type: relationship.relationship_type,
+        variant: relationship.relationship_variant || "unspecified",
+        startYear: relationship.start_year,
+        endYear: relationship.end_year,
       })),
     ]);
   };
-  const linkPeople = async (personA, personB, relation, startYear = "") => {
+  const linkPeople = async (
+    personA,
+    personB,
+    relation,
+    startYear = "",
+    variant = "unspecified",
+    sharedParentIds = [],
+  ) => {
     if (!personA || !personB || personA.id === personB.id)
       throw new Error("Choose two different people.");
     if (personA.ownerId !== personB.ownerId)
       throw new Error(
-        "These records belong to different family graphs and cannot be linked directly yet.",
+        "These records belong to different family graphs and cannot be linked directly.",
       );
     if (
       startYear &&
@@ -2974,39 +4132,111 @@ function FamilyApp({ session }) {
         Number(startYear) > new Date().getFullYear())
     )
       throw new Error("Enter a valid four-digit relationship year.");
-    const type =
-      relation === "parent-a" || relation === "parent-b" ? "parent" : relation;
-    const from = relation === "parent-b" ? personB.id : personA.id;
-    const to = relation === "parent-b" ? personA.id : personB.id;
-    const symmetric = ["sibling", "spouse", "partner"].includes(type);
-    const duplicate = relationships.some(
-      (item) =>
-        item.type === type &&
-        ((item.from === from && item.to === to) ||
-          (symmetric && item.from === to && item.to === from)),
-    );
-    if (duplicate)
-      throw new Error("That direct relationship is already recorded.");
-    const result = await supabase
-      .from("relationships")
-      .insert({
-        owner_id: personA.ownerId,
-        created_by: session.user.id,
+
+    const base = {
+      owner_id: personA.ownerId,
+      created_by: session.user.id,
+    };
+    const rows = [];
+
+    if (relation === "sibling") {
+      const knownParents = [
+        ...new Set([
+          ...parentIdsFor(personA.id, relationships),
+          ...parentIdsFor(personB.id, relationships),
+        ]),
+      ];
+      if (knownParents.length && !sharedParentIds.length)
+        throw new Error(
+          "Select at least one shared parent so Vansh can distinguish full and half siblings.",
+        );
+
+      if (sharedParentIds.length) {
+        sharedParentIds.forEach((parentId) => {
+          [personA.id, personB.id].forEach((childId) => {
+            const exists = relationships.some(
+              (item) =>
+                item.type === "parent" &&
+                item.from === parentId &&
+                item.to === childId,
+            );
+            if (!exists)
+              rows.push({
+                ...base,
+                person_a_id: parentId,
+                person_b_id: childId,
+                relationship_type: "parent",
+                relationship_variant:
+                  relationships.find(
+                    (item) =>
+                      item.type === "parent" &&
+                      item.from === parentId &&
+                      [personA.id, personB.id].includes(item.to),
+                  )?.variant || "biological",
+                start_year: null,
+              });
+          });
+        });
+      } else {
+        const duplicate = relationships.some(
+          (item) =>
+            item.type === "sibling" &&
+            ((item.from === personA.id && item.to === personB.id) ||
+              (item.from === personB.id && item.to === personA.id)),
+        );
+        if (duplicate)
+          throw new Error("That sibling relationship is already recorded.");
+        rows.push({
+          ...base,
+          person_a_id: personA.id,
+          person_b_id: personB.id,
+          relationship_type: "sibling",
+          relationship_variant: "reported",
+          start_year: null,
+        });
+      }
+    } else {
+      const type =
+        relation === "parent-a" || relation === "parent-b"
+          ? "parent"
+          : relation;
+      const from = relation === "parent-b" ? personB.id : personA.id;
+      const to = relation === "parent-b" ? personA.id : personB.id;
+      const symmetric = ["spouse", "partner"].includes(type);
+      const duplicate = relationships.some(
+        (item) =>
+          item.type === type &&
+          ((item.from === from && item.to === to) ||
+            (symmetric && item.from === to && item.to === from)),
+      );
+      if (duplicate)
+        throw new Error("That direct relationship is already recorded.");
+      rows.push({
+        ...base,
         person_a_id: from,
         person_b_id: to,
         relationship_type: type,
+        relationship_variant:
+          type === "parent"
+            ? variant || "biological"
+            : ["spouse", "partner"].includes(type)
+              ? variant || "current"
+              : "unspecified",
         start_year:
           ["spouse", "partner"].includes(type) && startYear
             ? Number(startYear)
             : null,
-      })
-      .select()
-      .single();
+      });
+    }
+
+    if (!rows.length)
+      throw new Error(
+        "Those people are already connected through the selected parent relationship.",
+      );
+
+    const result = await supabase.from("relationships").insert(rows).select();
     if (result.error) throw result.error;
-    setRelationships((current) => [
-      ...current,
-      { id: result.data.id, from, to, type, startYear: result.data.start_year },
-    ]);
+    await refreshFamilyData();
   };
   const deletePerson = async (person) => {
     if (
@@ -3047,6 +4277,10 @@ function FamilyApp({ session }) {
         <strong>Opening your family space</strong>
       </div>
     );
+  const notificationCount = inbox.filter(
+    (item) => item.direction === "incoming" && item.status === "pending",
+  ).length;
+
   if (dataError)
     return (
       <div className="loading-screen error-state">
@@ -3067,6 +4301,7 @@ function FamilyApp({ session }) {
         close={() => setMenu(false)}
         people={people}
         openNotes={() => setShowNotes(true)}
+        notificationCount={notificationCount}
       />
       <main>
         <Header
@@ -3076,6 +4311,8 @@ function FamilyApp({ session }) {
           profile={profile}
           self={people.find((person) => person.isSelf)}
           signOut={() => supabase.auth.signOut()}
+          notificationCount={notificationCount}
+          onNotifications={() => setPage("matches")}
         />
         {filtered ? (
           <div className="page search-results">
@@ -3118,6 +4355,7 @@ function FamilyApp({ session }) {
             editPerson={setEditing}
             deletePerson={deletePerson}
             invitePerson={setInviting}
+            openMerge={() => setMergingPeople(true)}
           />
         ) : page === "tree" ? (
           <Tree
@@ -3129,7 +4367,15 @@ function FamilyApp({ session }) {
             openLinkPeople={() => setLinkingPeople(true)}
           />
         ) : (
-          <Matches matches={matches} connect={connect} />
+          <Connections
+            matches={matches}
+            identityCandidates={identityCandidates}
+            inbox={inbox}
+            connect={connect}
+            requestIdentity={requestIdentity}
+            dismissIdentity={dismissIdentity}
+            respondInbox={respondInbox}
+          />
         )}
       </main>
       {adding && (
@@ -3157,20 +4403,7 @@ function FamilyApp({ session }) {
         <PlaceholderModal
           anchor={placeholdersFor}
           existingSiblingCount={
-            new Set(
-              relationships
-                .filter(
-                  (relationship) =>
-                    relationship.type === "sibling" &&
-                    (relationship.from === placeholdersFor.id ||
-                      relationship.to === placeholdersFor.id),
-                )
-                .map((relationship) =>
-                  relationship.from === placeholdersFor.id
-                    ? relationship.to
-                    : relationship.from,
-                ),
-            ).size
+            siblingDetailsFor(placeholdersFor.id, relationships).length
           }
           close={() => setPlaceholdersFor(null)}
           addPlaceholders={addPlaceholders}
@@ -3179,8 +4412,16 @@ function FamilyApp({ session }) {
       {linkingPeople && (
         <LinkPeopleModal
           people={people}
+          relationships={relationships}
           close={() => setLinkingPeople(false)}
           linkPeople={linkPeople}
+        />
+      )}
+      {mergingPeople && (
+        <MergePeopleModal
+          people={people}
+          close={() => setMergingPeople(false)}
+          mergePeople={mergePeople}
         />
       )}
       {showNotes && <PatchNotes close={() => setShowNotes(false)} />}
