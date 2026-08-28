@@ -5,13 +5,13 @@
 create extension if not exists pgcrypto;
 create schema if not exists private;
 
-create or replace function private.norm_text(value text)
+create or replace function private.norm_text(v text)
 returns text
 language sql
 immutable
 set search_path = ''
 as $$
-  select regexp_replace(lower(trim(coalesce(value, ''))), '[^a-z0-9]+', '', 'g');
+  select regexp_replace(lower(trim(coalesce(v, ''))), '[^a-z0-9]+', '', 'g');
 $$;
 
 -- ---------------------------------------------------------------------------
@@ -55,6 +55,20 @@ update public.family_members
 set person_identity_id = gen_random_uuid()
 where person_identity_id is null;
 
+-- Keep legacy birth-year validation compatible with exact-date onboarding.
+alter table public.family_members
+  drop constraint if exists family_members_birth_year_check;
+
+alter table public.family_members
+  add constraint family_members_birth_year_check
+  check (
+    birth_year is null
+    or (birth_year >= 1800 and birth_year <= extract(year from current_date)::integer)
+  );
+
+-- Legacy versions used a UNIQUE index here. That conflicts with verified identity
+-- linking because multiple graph records can represent the same real person.
+drop index if exists public.family_members_person_identity_uidx;
 create index if not exists family_members_identity_idx on public.family_members(person_identity_id);
 create index if not exists family_members_linked_user_idx on public.family_members(linked_user_id);
 create index if not exists family_members_owner_idx on public.family_members(owner_id);
@@ -64,6 +78,28 @@ alter table public.relationships
   add column if not exists start_year integer,
   add column if not exists end_year integer,
   add column if not exists relationship_variant text not null default 'unspecified';
+
+-- Reconcile legacy relationship-variant validation with the P0 graph model.
+-- Existing databases may have a narrower CHECK constraint that predates
+-- reported siblings, parent variants, and current/former partnerships.
+alter table public.relationships
+  drop constraint if exists relationships_relationship_variant_check;
+
+alter table public.relationships
+  add constraint relationships_relationship_variant_check
+  check (
+    relationship_variant is null
+    or relationship_variant in (
+      'unspecified',
+      'reported',
+      'biological',
+      'adoptive',
+      'step',
+      'guardian',
+      'current',
+      'former'
+    )
+  );
 
 create index if not exists relationships_a_idx on public.relationships(person_a_id);
 create index if not exists relationships_b_idx on public.relationships(person_b_id);
@@ -199,6 +235,7 @@ language sql
 stable
 security definer
 set search_path = ''
+set row_security = off
 as $$
   select exists (
     select 1
@@ -235,6 +272,7 @@ language sql
 stable
 security definer
 set search_path = ''
+set row_security = off
 as $$
   select exists (
     select 1
@@ -248,6 +286,25 @@ as $$
         )
       )
   );
+$$;
+
+
+create or replace function public.can_create_family_member_for_owner(p_user_id uuid, p_owner_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+set row_security = off
+as $$
+  select
+    p_user_id = p_owner_id
+    or exists (
+      select 1
+      from public.family_members anchor
+      where anchor.owner_id = p_owner_id
+        and public.can_access_family_member(p_user_id, anchor.id)
+    );
 $$;
 
 create or replace function private.guard_family_member_write()
@@ -422,15 +479,17 @@ create policy "Read own profile" on public.profiles for select to authenticated 
 create policy "Update own profile" on public.profiles for update to authenticated using (id = auth.uid()) with check (id = auth.uid());
 
 create policy "Read accessible family members" on public.family_members
-for select to authenticated using (public.can_access_family_member(auth.uid(), id));
+for select to authenticated using (
+  owner_id = (select auth.uid())
+  or created_by = (select auth.uid())
+  or linked_user_id = (select auth.uid())
+  or filled_by = (select auth.uid())
+  or public.can_access_family_member((select auth.uid()), id)
+);
 
 create policy "Create accessible family members" on public.family_members
 for insert to authenticated with check (
-  created_by = auth.uid()
-  and (
-    owner_id = auth.uid()
-    or exists (select 1 from public.family_members anchor where anchor.owner_id = family_members.owner_id and public.can_access_family_member(auth.uid(), anchor.id))
-  )
+  public.can_create_family_member_for_owner((select auth.uid()), owner_id)
 );
 
 create policy "Update manageable family members" on public.family_members
@@ -967,6 +1026,9 @@ as $$
 declare
   k public.family_members%rowtype;
   m public.family_members%rowtype;
+  rel record;
+  new_a uuid;
+  new_b uuid;
 begin
   if p_keep_id=p_merge_id then raise exception 'Choose two different records.'; end if;
   select * into k from public.family_members where id=p_keep_id for update;
@@ -1001,8 +1063,42 @@ begin
     lived_in = case when p_field_choices->>'lived_in'='merge' then m.lived_in else coalesce(k.lived_in,m.lived_in) end
   where id=k.id;
 
-  update public.relationships set person_a_id=k.id where person_a_id=m.id;
-  update public.relationships set person_b_id=k.id where person_b_id=m.id;
+  -- Transfer the duplicate's graph edges one at a time. A direct relationship
+  -- between the two duplicate records would become k -> k and violate the
+  -- relationships_different_people constraint, so it is removed. If replacing
+  -- m with k would create an edge that already exists, keep the existing edge
+  -- and remove the duplicate one before updating anything.
+  for rel in
+    select *
+    from public.relationships
+    where person_a_id=m.id or person_b_id=m.id
+    order by created_at nulls last, id
+  loop
+    new_a := case when rel.person_a_id=m.id then k.id else rel.person_a_id end;
+    new_b := case when rel.person_b_id=m.id then k.id else rel.person_b_id end;
+
+    if new_a = new_b then
+      delete from public.relationships where id=rel.id;
+    elsif exists (
+      select 1
+      from public.relationships d
+      where d.id <> rel.id
+        and d.owner_id = rel.owner_id
+        and d.person_a_id = new_a
+        and d.person_b_id = new_b
+        and d.relationship_type = rel.relationship_type
+        and coalesce(d.relationship_variant,'') = coalesce(rel.relationship_variant,'')
+    ) then
+      delete from public.relationships where id=rel.id;
+    else
+      update public.relationships
+      set person_a_id=new_a,
+          person_b_id=new_b
+      where id=rel.id;
+    end if;
+  end loop;
+
+  -- Defensive cleanup for legacy duplicate edges.
   delete from public.relationships where person_a_id=person_b_id;
   delete from public.relationships r
   using public.relationships d
@@ -1115,7 +1211,7 @@ as $$
     left join public.profiles ip on ip.id=fi.inviter_id
     where lower(fi.email)=lower(coalesce(auth.jwt()->>'email',''))
       and fi.status in ('pending','accepted','rejected','expired')
-  ) inbox
+  ) as inbox(kind, request_id, direction, status, counterpart_name, subject_name, score, shared_details, created_at)
   order by case when inbox.status='pending' and inbox.direction='incoming' then 0 when inbox.status='pending' then 1 else 2 end, inbox.created_at desc
   limit 80;
 $$;
@@ -1251,6 +1347,7 @@ for each row execute function public.handle_new_user();
 
 -- Grants for RPCs called by the browser client.
 grant execute on function public.can_access_family_member(uuid,uuid) to authenticated;
+grant execute on function public.can_create_family_member_for_owner(uuid,uuid) to authenticated;
 grant execute on function public.can_manage_family_member(uuid,uuid) to authenticated;
 grant execute on function public.find_identity_claim_candidates() to authenticated;
 grant execute on function public.request_identity_claim(uuid) to authenticated;
