@@ -2,6 +2,43 @@ import { useEffect, useState } from "react";
 import { LoaderCircle, MapPin, Search, X } from "lucide-react";
 import { supabase } from "./supabase.js";
 
+const normalizePhoton = (payload) => {
+  const seen = new Set();
+  const results = [];
+  for (const feature of payload?.features || []) {
+    const properties = feature.properties || {};
+    const country = properties.country;
+    const city = properties.city || properties.name;
+    if (!city || !country || ["country", "state", "county"].includes(properties.type)) continue;
+    const region = properties.state || properties.county || null;
+    const key = `${city}|${region || ""}|${country}`.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    results.push({
+      providerId: `${properties.osm_type || "osm"}:${properties.osm_id || key}`,
+      city,
+      region,
+      country,
+      countryCode: properties.countrycode?.toUpperCase() || null,
+      display: [city, region, country].filter(Boolean).join(", "),
+      longitude: feature.geometry?.coordinates?.[0] ?? null,
+      latitude: feature.geometry?.coordinates?.[1] ?? null,
+    });
+    if (results.length === 7) break;
+  }
+  return results;
+};
+
+const directPlaceSearch = async (query, signal) => {
+  const url = new URL("https://photon.komoot.io/api/");
+  url.searchParams.set("q", query);
+  url.searchParams.set("limit", "10");
+  url.searchParams.set("lang", "en");
+  const response = await fetch(url, { signal, headers: { Accept: "application/json" } });
+  if (!response.ok) throw new Error(`Place search returned ${response.status}`);
+  return normalizePhoton(await response.json());
+};
+
 export default function LocationPicker({
   value,
   onChange,
@@ -12,24 +49,48 @@ export default function LocationPicker({
   const [results, setResults] = useState([]);
   const [searching, setSearching] = useState(false);
   const [error, setError] = useState("");
+  const [searchSource, setSearchSource] = useState("");
   const [replacingLegacy, setReplacingLegacy] = useState(!legacyValue);
   const selected = multiple ? value || [] : value ? [value] : [];
 
   useEffect(() => {
     if (query.trim().length < 2) return undefined;
     let active = true;
+    const controller = new AbortController();
     const timer = window.setTimeout(async () => {
-      const { data, error: searchError } = await supabase.functions.invoke(
-        "search-places",
-        { body: { query } },
-      );
+      const term = query.trim();
+      setSearching(true);
+      setError("");
+      let nextResults = [];
+      try {
+        const { data, error: functionError } = await supabase.functions.invoke(
+          "search-places",
+          { body: { query: term } },
+        );
+        if (!functionError && Array.isArray(data?.results)) {
+          nextResults = data.results;
+          setSearchSource("server");
+        } else {
+          nextResults = await directPlaceSearch(term, controller.signal);
+          setSearchSource("direct");
+        }
+      } catch {
+        try {
+          nextResults = await directPlaceSearch(term, controller.signal);
+          setSearchSource("direct");
+        } catch (fallbackError) {
+          if (fallbackError?.name === "AbortError") return;
+          setError("City search is unavailable right now. Check your internet connection and try again.");
+          setSearchSource("");
+        }
+      }
       if (!active) return;
-      setResults(data?.results || []);
-      setError(searchError ? "City search is temporarily unavailable." : "");
+      setResults(nextResults);
       setSearching(false);
-    }, 300);
+    }, 280);
     return () => {
       active = false;
+      controller.abort();
       window.clearTimeout(timer);
     };
   }, [query]);
@@ -43,6 +104,15 @@ export default function LocationPicker({
   };
   const choose = (location) => {
     if (multiple) {
+      const duplicate = selected.some(
+        (item) =>
+          (item.providerId && item.providerId === location.providerId) ||
+          item.display?.toLowerCase() === location.display?.toLowerCase(),
+      );
+      if (duplicate) {
+        setError(`${location.display} is already in this residence list.`);
+        return;
+      }
       onChange([
         ...selected,
         {
@@ -204,6 +274,9 @@ export default function LocationPicker({
                 No matching city found. Try a nearby town or alternate spelling.
               </small>
             )}
+          {searchSource === "direct" && results.length > 0 && (
+            <small className="location-hint">Using direct OpenStreetMap place search while the Vansh search service is unavailable.</small>
+          )}
           <small className="selection-rule">
             {multiple
               ? "Add optional years after selecting a city. Leave To blank if they still live there."

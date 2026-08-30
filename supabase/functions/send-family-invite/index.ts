@@ -23,9 +23,20 @@ Deno.serve(async (req: Request) => {
 
   try {
     const body = await req.json()
-    const personId = typeof body.personId === 'string' ? body.personId : ''
-    const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : ''
-    const scope = ['connection', 'immediate', 'extended'].includes(body.scope) ? body.scope : 'connection'
+    const resendInvitationId = typeof body.resendInvitationId === 'string' ? body.resendInvitationId : ''
+    let personId = typeof body.personId === 'string' ? body.personId : ''
+    let email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : ''
+    let scope = ['connection', 'immediate', 'extended'].includes(body.scope) ? body.scope : 'connection'
+    if (resendInvitationId) {
+      const { data: existing, error: existingError } = await admin.from('family_invitations').select('id, inviter_id, person_id, email, scope, status, last_sent_at, send_count').eq('id', resendInvitationId).single()
+      if (existingError || !existing || existing.inviter_id !== userData.user.id) return json({ error: 'Invitation not found.' }, 404)
+      if (!['pending','expired'].includes(existing.status)) return json({ error: `A ${existing.status} invitation cannot be resent.` }, 409)
+      if ((existing.send_count || 1) >= 10) return json({ error: 'This invitation has reached its resend limit. Revoke it and create a new invitation later if needed.' }, 429)
+      if (existing.last_sent_at && Date.now() - new Date(existing.last_sent_at).getTime() < 60_000) return json({ error: 'Please wait at least one minute before resending this invitation.' }, 429)
+      personId = existing.person_id
+      email = existing.email.toLowerCase()
+      scope = existing.scope
+    }
     if (!personId || !/^\S+@\S+\.\S+$/.test(email)) return json({ error: 'Enter a valid email address.' }, 400)
     if (email === userData.user.email?.toLowerCase()) return json({ error: 'You cannot invite your own email address.' }, 400)
 
@@ -38,39 +49,61 @@ Deno.serve(async (req: Request) => {
       .select('*', { count: 'exact', head: true })
       .eq('inviter_id', userData.user.id)
       .gte('created_at', new Date(Date.now() - 60 * 60 * 1000).toISOString())
-    if ((recentInvites || 0) >= 20) return json({ error: 'Invitation limit reached. Please try again later.' }, 429)
+    if ((recentInvites || 0) >= 20) return json({ error: 'Hourly invitation limit reached. Please try again later.' }, 429)
+    const { count: dailyInvites } = await admin
+      .from('family_invitations')
+      .select('*', { count: 'exact', head: true })
+      .eq('inviter_id', userData.user.id)
+      .gte('created_at', new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString())
+    if ((dailyInvites || 0) >= 100) return json({ error: 'Daily invitation quota reached. Please try again tomorrow.' }, 429)
 
     const { data: inviterPerson } = await userClient.from('family_members').select('id').eq('owner_id', person.owner_id).eq('linked_user_id', userData.user.id).limit(1).maybeSingle()
-    const { data: invitation, error: inviteError } = await admin.from('family_invitations').insert({
-      graph_owner_id: person.owner_id,
-      inviter_id: userData.user.id,
-      inviter_person_id: inviterPerson?.id || null,
-      person_id: person.id,
-      email,
-      scope,
-      status: 'pending',
-    }).select('id').single()
-    if (inviteError) {
-      if (inviteError.code === '23505') return json({ error: 'A pending invitation already exists for this person and email.' }, 409)
-      throw inviteError
+    let invitation: { id: string } | null = null
+    if (resendInvitationId) {
+      const { data: refreshed, error: refreshError } = await admin.from('family_invitations').update({
+        status: 'pending', responded_at: null, expires_at: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+        last_sent_at: new Date().toISOString(), send_count: (existing?.send_count || 1) + 1,
+      }).eq('id', resendInvitationId).select('id').single()
+      if (refreshError) throw refreshError
+      invitation = refreshed
+    } else {
+      const { data: created, error: inviteError } = await admin.from('family_invitations').insert({
+        graph_owner_id: person.owner_id,
+        inviter_id: userData.user.id,
+        inviter_person_id: inviterPerson?.id || null,
+        person_id: person.id,
+        email,
+        scope,
+        status: 'pending',
+        last_sent_at: new Date().toISOString(),
+        send_count: 1,
+      }).select('id').single()
+      if (inviteError) {
+        if (inviteError.code === '23505') return json({ error: 'A pending invitation already exists for this person and email.' }, 409)
+        throw inviteError
+      }
+      invitation = created
     }
 
-    const redirectTo = Deno.env.get('VANSH_APP_URL') || 'https://sindhi-fam.vercel.app'
-    const metadata = { display_name: `${person.first_name} ${person.surname}`, family_surname: person.surname, vansh_invitation_id: invitation.id }
+    const redirectTo = Deno.env.get('VANSH_APP_URL') || ''
+    if (!redirectTo) throw new Error('VANSH_APP_URL is not configured for this environment.')
+    const metadata = { display_name: `${person.first_name} ${person.surname}`, family_surname: person.surname, vansh_invitation_id: invitation!.id }
     const { error: newUserError } = await admin.auth.admin.inviteUserByEmail(email, { data: metadata, redirectTo })
     let delivery = 'invitation'
     if (newUserError) {
       const publicClient = createClient(url, anonKey)
       const { error: existingUserError } = await publicClient.auth.signInWithOtp({ email, options: { shouldCreateUser: false, emailRedirectTo: redirectTo } })
       if (existingUserError) {
-        await admin.from('family_invitations').delete().eq('id', invitation.id)
+        if (!resendInvitationId) {
+          await admin.from('family_invitations').delete().eq('id', invitation!.id)
+        }
         throw new Error(`Could not send the invitation email: ${existingUserError.message}`)
       }
       delivery = 'sign-in link'
     }
 
-    const { count } = await admin.from('family_invitation_access').select('*', { count: 'exact', head: true }).eq('invitation_id', invitation.id)
-    return json({ invitationId: invitation.id, sharedPeople: count || 0, delivery })
+    const { count } = await admin.from('family_invitation_access').select('*', { count: 'exact', head: true }).eq('invitation_id', invitation!.id)
+    return json({ invitationId: invitation!.id, sharedPeople: count || 0, delivery })
   } catch (error) {
     return json({ error: error instanceof Error ? error.message : 'Could not send invitation.' }, 500)
   }

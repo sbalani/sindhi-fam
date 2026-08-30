@@ -72,3 +72,11 @@ This release preserves existing family data and changes how identity, editing an
 - Added claimed/unclaimed status treatment and correction actions.
 - Added parent-selection guidance for full vs half siblings.
 - Version bumped from 0.11.1 to 0.12.0.
+
+## 0.13.2 — Account persistence, family update activity, onboarding repair
+- Decoupled persistent family graph keys from `auth.users` so deleting a login no longer cascades through shared genealogy.
+- Accepted/shared invitation access now survives deletion of the original inviter; deleted account attribution becomes null rather than deleting family facts.
+- Added a 30-day orphaned-tree safety state for a tree with no surviving account, while shared trees remain active.
+- Added account-deletion impact preview and simplified the delete Edge Function so it no longer tries to rewrite graph ownership through guarded browser-write triggers.
+- Added family tree update notifications for accessible changes made by another relative.
+- Fixed onboarding to require two parents, anchor grandparents to the actual parent instead of the signed-in user, and allow unknown grandparents to be skipped.

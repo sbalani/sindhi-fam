@@ -31,15 +31,29 @@ import {
 } from "lucide-react";
 import { isSupabaseConfigured, supabase } from "./supabase.js";
 import LocationPicker from "./LocationPicker.jsx";
+import JourneyMap from "./components/JourneyMap.jsx";
+import PersonDetail from "./components/PersonDetail.jsx";
+import Onboarding from "./components/Onboarding.jsx";
+import VoiceEntry from "./components/VoiceEntry.jsx";
+import ProfilePanel from "./components/ProfilePanel.jsx";
+import SearchResults from "./components/SearchResults.jsx";
+import FamilyConnectionsEditor, { ensureTwoParentRows } from "./components/FamilyConnectionsEditor.jsx";
+import AccessibleModal from "./components/AccessibleModal.jsx";
+import AppErrorBoundary from "./components/AppErrorBoundary.jsx";
+import useUrlPage from "./hooks/useUrlPage.js";
+import useDialogAccessibility from "./hooks/useDialogAccessibility.js";
+import { parentIdsFor, siblingDetailsFor, deriveBranchLabel, shortestRelationshipPath, dedupePeopleForDisplay } from "./utils/kinship.js";
+import { validatePersonForm } from "./utils/validation.js";
 
 const nav = [
   { id: "home", label: "Overview", icon: LayoutDashboard },
   { id: "family", label: "My family", icon: UsersRound },
-  { id: "tree", label: "Family map", icon: Network },
+  { id: "tree", label: "Family tree", icon: Network },
+  { id: "journey", label: "Family journey", icon: MapPin },
   { id: "matches", label: "Connections", icon: Sparkles },
 ];
 
-const APP_VERSION = "0.12.0";
+const APP_VERSION = "0.13.2";
 
 const RELATION_OPTIONS = [
   {
@@ -173,7 +187,13 @@ const personFromRow = (row, index = 0, currentUserId = "") => {
     maidenName: row.maiden_name || "",
     birthYear: row.birth_year?.toString() || "",
     birthDate: row.birth_date || "",
+    birthApproximate: Boolean(row.birth_approximate),
     birthLocation: row.birth_location || null,
+    deathYear: row.death_year?.toString() || "",
+    deathDate: row.death_date || "",
+    deathApproximate: Boolean(row.death_approximate),
+    deathLocation: row.death_location || null,
+    deathPlace: row.death_location?.display || row.death_place || "",
     livedLocations: row.lived_locations || [],
     birthPlace: row.birth_location?.display || row.birth_place || "",
     livedIn: row.lived_locations?.length
@@ -183,6 +203,13 @@ const personFromRow = (row, index = 0, currentUserId = "") => {
     legacyLivedIn: !row.lived_locations?.length ? row.lived_in || "" : "",
     side: row.family_side || "Other",
     gender: row.gender || "unspecified",
+    factConfidence: row.fact_confidence || "reported",
+    provenanceNote: row.provenance_note || "",
+    privacyLevel: row.privacy_level || "family",
+    revision: row.revision || 1,
+    updatedAt: row.updated_at || null,
+    updatedBy: row.updated_by || null,
+    confirmationCount: row.confirmation_count || 0,
     isSelf: Boolean(row.is_self && row.owner_id === currentUserId),
     ownerId: row.owner_id,
     createdBy: row.created_by,
@@ -193,7 +220,7 @@ const personFromRow = (row, index = 0, currentUserId = "") => {
     placeholderLabel: row.placeholder_label,
     filledBy: row.filled_by,
     canEdit: isIdentityOwner || canManageUnclaimed,
-    canSuggest: isClaimed && !isIdentityOwner,
+    canSuggest: !row.is_placeholder && !isIdentityOwner && !canManageUnclaimed,
     canDelete:
       !isClaimed &&
       !row.is_self &&
@@ -210,86 +237,64 @@ const personFromRow = (row, index = 0, currentUserId = "") => {
   };
 };
 
-const parentIdsFor = (personId, relationships) =>
-  relationships
-    .filter(
-      (relationship) =>
-        relationship.type === "parent" && relationship.to === personId,
-    )
-    .map((relationship) => relationship.from);
-
-const siblingDetailsFor = (personId, relationships) => {
-  const myParentRelationships = relationships.filter(
-    (relationship) =>
-      relationship.type === "parent" && relationship.to === personId,
-  );
-  const myParentIds = new Set(
-    myParentRelationships.map((relationship) => relationship.from),
-  );
-  const candidateIds = new Set();
-
-  relationships.forEach((relationship) => {
-    if (
-      relationship.type === "parent" &&
-      myParentIds.has(relationship.from)
-    )
-      candidateIds.add(relationship.to);
-    if (
-      relationship.type === "sibling" &&
-      (relationship.from === personId || relationship.to === personId)
-    )
-      candidateIds.add(
-        relationship.from === personId ? relationship.to : relationship.from,
-      );
+const familyStateFromRows = (memberRows, relationshipRows, currentUserId) => {
+  const degrees = new Map();
+  relationshipRows.forEach((row) => {
+    degrees.set(row.person_a_id, (degrees.get(row.person_a_id) || 0) + 1);
+    degrees.set(row.person_b_id, (degrees.get(row.person_b_id) || 0) + 1);
   });
-
-  candidateIds.delete(personId);
-  return [...candidateIds].map((id) => {
-    const theirParents = relationships.filter(
-      (relationship) =>
-        relationship.type === "parent" && relationship.to === id,
-    );
-    const shared = theirParents
-      .map((theirRelationship) => {
-        const mine = myParentRelationships.find(
-          (relationship) =>
-            relationship.from === theirRelationship.from,
-        );
-        if (!mine) return null;
-        const variants = [
-          mine.variant || "unspecified",
-          theirRelationship.variant || "unspecified",
-        ];
-        return {
-          parentId: theirRelationship.from,
-          stepLike: variants.some((value) =>
-            ["step", "guardian"].includes(value),
-          ),
-        };
-      })
-      .filter(Boolean);
-    const directReported = relationships.some(
-      (relationship) =>
-        relationship.type === "sibling" &&
-        ((relationship.from === personId && relationship.to === id) ||
-          (relationship.from === id && relationship.to === personId)),
-    );
-    const familyShared = shared.filter((item) => !item.stepLike);
-
-    return {
-      id,
-      sharedParentIds: familyShared.map((item) => item.parentId),
-      kind: familyShared.length >= 2
-        ? "full"
-        : familyShared.length === 1
-          ? "half"
-          : shared.some((item) => item.stepLike)
-            ? "step"
-            : directReported
-              ? "reported"
-              : "reported",
-    };
+  const groups = new Map();
+  memberRows.forEach((row) => {
+    const key = row.linked_user_id
+      ? `user:${row.linked_user_id}`
+      : row.person_identity_id
+        ? `identity:${row.person_identity_id}`
+        : `member:${row.id}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(row);
   });
+  const canonicalId = new Map();
+  const representatives = [];
+  for (const rows of groups.values()) {
+    const ranked = [...rows].sort((a, b) => {
+      const degreeDiff = (degrees.get(b.id) || 0) - (degrees.get(a.id) || 0);
+      if (degreeDiff) return degreeDiff;
+      const selfDiff = Number(Boolean(b.is_self && b.owner_id === currentUserId)) - Number(Boolean(a.is_self && a.owner_id === currentUserId));
+      if (selfDiff) return selfDiff;
+      return String(a.created_at || '').localeCompare(String(b.created_at || ''));
+    });
+    const representative = { ...ranked[0] };
+    representative.is_self = rows.some((row) => row.is_self && row.owner_id === currentUserId);
+    representative._source_ids = rows.map((row) => row.id);
+    rows.forEach((row) => canonicalId.set(row.id, representative.id));
+    representatives.push(representative);
+  }
+  const people = representatives.map((row, index) => ({
+    ...personFromRow(row, index, currentUserId),
+    sourceIds: row._source_ids || [row.id],
+  }));
+  const seenRelationships = new Set();
+  const relationships = relationshipRows
+    .map((row) => ({
+      id: row.id,
+      from: canonicalId.get(row.person_a_id) || row.person_a_id,
+      to: canonicalId.get(row.person_b_id) || row.person_b_id,
+      type: row.relationship_type,
+      variant: row.relationship_variant || "unspecified",
+      startYear: row.start_year,
+      endYear: row.end_year,
+      revision: row.revision || 1,
+    }))
+    .filter((row) => {
+      if (row.from === row.to) return false;
+      const symmetric = ["sibling", "spouse", "partner"].includes(row.type);
+      const ends = symmetric ? [row.from, row.to].sort().join(":") : `${row.from}:${row.to}`;
+      const key = `${row.type}:${row.variant}:${ends}`;
+      if (seenRelationships.has(key)) return false;
+      seenRelationships.add(key);
+      return true;
+    });
+  return { people, relationships };
 };
 
 function AuthScreen() {
@@ -297,9 +302,10 @@ function AuthScreen() {
   const [form, setForm] = useState({
     firstName: "",
     surname: "",
+    birthSurname: "",
     birthDate: "",
-    birthLocation: "",
-    location: "",
+    birthLocation: null,
+    location: null,
     discoveryEnabled: true,
     email: "",
     password: "",
@@ -326,9 +332,12 @@ function AuthScreen() {
                 display_name: `${form.firstName.trim()} ${form.surname.trim()}`.trim(),
                 first_name: form.firstName.trim(),
                 family_surname: form.surname.trim(),
+                birth_surname: form.birthSurname.trim() || null,
                 birth_date: form.birthDate || null,
-                birth_location: form.birthLocation.trim() || null,
-                location: form.location.trim() || null,
+                birth_location: form.birthLocation?.display || null,
+                location: form.location?.display || null,
+                birth_location_data: form.birthLocation,
+                current_location_data: form.location,
                 discovery_enabled: form.discoveryEnabled,
               },
             },
@@ -417,6 +426,15 @@ function AuthScreen() {
                 />
               </label>
               <label>
+                Birth / earlier surname <small>Optional</small>
+                <input
+                  name="birthSurname"
+                  value={form.birthSurname}
+                  onChange={update}
+                  placeholder="If different"
+                />
+              </label>
+              <label>
                 Date of birth <small>Optional</small>
                 <input
                   type="date"
@@ -427,20 +445,16 @@ function AuthScreen() {
               </label>
               <label>
                 Place of birth <small>Optional</small>
-                <input
-                  name="birthLocation"
+                <LocationPicker
                   value={form.birthLocation}
-                  onChange={update}
-                  placeholder="City or country"
+                  onChange={(value) => setForm((current) => ({ ...current, birthLocation: value }))}
                 />
               </label>
               <label className="wide">
                 Where do you live? <small>Optional</small>
-                <input
-                  name="location"
+                <LocationPicker
                   value={form.location}
-                  onChange={update}
-                  placeholder="City or country"
+                  onChange={(value) => setForm((current) => ({ ...current, location: value }))}
                 />
               </label>
               <label className="inline-check wide discovery-choice">
@@ -607,10 +621,11 @@ function Sidebar({ page, setPage, open, close, people, openNotes, notificationCo
 }
 
 function PatchNotes({ close }) {
+  const dialogRef = useDialogAccessibility(close);
   return (
     <div className="modal-wrap">
       <button className="modal-scrim" onClick={close} />
-      <section className="review-modal patch-notes">
+      <section ref={dialogRef} className="review-modal patch-notes" role="dialog" aria-modal="true" aria-label="Vansh release notes" tabIndex={-1}>
         <button className="modal-close" onClick={close}>
           <X />
         </button>
@@ -658,7 +673,7 @@ function PatchNotes({ close }) {
   );
 }
 
-function Header({ setMenu, query, setQuery, profile, self, signOut, notificationCount = 0, onNotifications }) {
+function Header({ setMenu, query, setQuery, profile, self, signOut, notificationCount = 0, onNotifications, onProfile }) {
   const current = self || {
     initials: profile?.display_name?.slice(0, 2).toUpperCase() || "VF",
     color: "terracotta",
@@ -686,14 +701,14 @@ function Header({ setMenu, query, setQuery, profile, self, signOut, notification
         {notificationCount > 0 && <b>{notificationCount}</b>}
       </button>
       <div className="header-user">
-        <Avatar person={current} size="small" />
-        <div>
-          <strong>
-            {profile?.display_name?.split(" ")[0] || "Family keeper"}
-          </strong>
-          <span>Private family space</span>
-        </div>
-        <button className="signout" onClick={signOut} title="Sign out">
+        <button className="profile-summary" onClick={onProfile} title="Open personal profile and privacy settings">
+          <Avatar person={current} size="small" />
+          <span>
+            <strong>{profile?.display_name?.split(" ")[0] || "Family keeper"}</strong>
+            <small>Personal profile</small>
+          </span>
+        </button>
+        <button className="signout" onClick={signOut} title="Sign out" aria-label="Sign out">
           <LogOut size={16} />
         </button>
       </div>
@@ -715,8 +730,9 @@ function Stat({ icon: Icon, value, label, tone }) {
   );
 }
 
-function Overview({ people, matches, profile, setPage, openAdd }) {
-  const surnameData = Object.values(
+function Overview({ people, relationships, matches, identityCandidates = [], profile, setPage, openAdd, inviteRelative, openSurnames, addFamilyPlace }) {
+  const [showSetupChecklist, setShowSetupChecklist] = useState(false);
+  const allSurnameData = Object.values(
     people
       .flatMap((person) =>
         [...new Set([person.surname, person.maidenName].filter(Boolean))].map(
@@ -735,7 +751,8 @@ function Overview({ people, matches, profile, setPage, openAdd }) {
           result[key].place = entry.person.birthPlace;
         return result;
       }, {}),
-  ).slice(0, 4);
+  );
+  const surnameData = allSurnameData.slice(0, 4);
   const places = [
     ...new Set(
       people.flatMap((person) =>
@@ -755,10 +772,33 @@ function Overview({ people, matches, profile, setPage, openAdd }) {
           <h1>Namaste, {profile?.display_name?.split(" ")[0] || "friend"}.</h1>
           <p>Every name you add makes your family's story a little clearer.</p>
         </div>
-        <button className="primary" onClick={openAdd}>
-          <Plus size={18} /> Add family member
-        </button>
+        <div className="welcome-actions">
+          <button className="secondary" type="button" onClick={() => setShowSetupChecklist(true)}>Setup checklist</button>
+          <button className="primary" onClick={() => openAdd()}>
+            <Plus size={18} /> Add family member
+          </button>
+        </div>
       </section>
+      <Onboarding
+        people={people}
+        relationships={relationships}
+        self={people.find((person) => person.isSelf)}
+        addRelative={openAdd}
+        inviteRelative={inviteRelative}
+        goJourney={addFamilyPlace}
+        force={showSetupChecklist}
+        onHide={() => setShowSetupChecklist(false)}
+      />
+      {identityCandidates.length > 0 && (
+        <section className="identity-alert panel">
+          <div>
+            <span className="mini-title"><ShieldCheck size={15} /> IDENTITY SUGGESTION</span>
+            <h2>We found an existing record that may be you</h2>
+            <p>{identityCandidates[0].name} · match score {identityCandidates[0].score}. Nothing is linked until you request the claim and the existing record owner approves.</p>
+          </div>
+          <button className="primary" onClick={() => setPage("matches")}>Review suggestion <ArrowRight size={15} /></button>
+        </section>
+      )}
       <section className="stats">
         <Stat
           icon={UsersRound}
@@ -768,7 +808,7 @@ function Overview({ people, matches, profile, setPage, openAdd }) {
         />
         <Stat
           icon={Link2}
-          value={surnameData.length}
+          value={allSurnameData.length}
           label="Family surnames"
           tone="orange"
         />
@@ -818,8 +858,8 @@ function Overview({ people, matches, profile, setPage, openAdd }) {
                   </p>
                 </div>
                 <div className="confidence">
-                  <strong>{match.score}%</strong>
-                  <span>match</span>
+                  <strong>{match.score}</strong>
+                  <span>match score</span>
                 </div>
                 <button
                   className="secondary"
@@ -870,7 +910,7 @@ function Overview({ people, matches, profile, setPage, openAdd }) {
               <p>Add a family member to begin.</p>
             </div>
           )}
-          <button className="full-link" onClick={() => setPage("family")}>
+          <button className="full-link" onClick={() => (openSurnames ? openSurnames() : setPage("family"))}>
             Explore all surnames <ArrowRight size={15} />
           </button>
         </aside>
@@ -915,19 +955,69 @@ function Overview({ people, matches, profile, setPage, openAdd }) {
   );
 }
 
-function Family({ people, openAdd, editPerson, deletePerson, invitePerson, openMerge }) {
+function Family({
+  people,
+  relationships,
+  openAdd,
+  editPerson,
+  deletePerson,
+  invitePerson,
+  openMerge,
+  openPerson,
+  openVoice,
+  initialView = "people",
+}) {
+  const [localQuery, setLocalQuery] = useState("");
+  const [branchFilter, setBranchFilter] = useState("all");
+  const [viewMode, setViewMode] = useState(initialView);
+  const self = people.find((person) => person.isSelf) || people[0];
+  const branchFor = (person) =>
+    deriveBranchLabel(person.id, self?.id, people, relationships);
+  const branches = [...new Set(people.map(branchFor))].filter(Boolean).sort();
+  const filteredPeople = people.filter((person) => {
+    const haystack = `${person.name} ${person.maidenName} ${person.birthPlace} ${person.livedIn}`.toLowerCase();
+    return (
+      (!localQuery || haystack.includes(localQuery.toLowerCase())) &&
+      (branchFilter === "all" || branchFor(person) === branchFilter)
+    );
+  });
+  const surnameRows = Object.values(
+    filteredPeople
+      .flatMap((person) =>
+        [...new Set([person.surname, person.maidenName].filter(Boolean))].map(
+          (name) => ({ name, person }),
+        ),
+      )
+      .reduce((result, entry) => {
+        const key = entry.name.toLowerCase();
+        result[key] ||= { name: entry.name, people: [], places: new Set() };
+        result[key].people.push(entry.person);
+        if (entry.person.birthPlace) result[key].places.add(entry.person.birthPlace);
+        return result;
+      }, {}),
+  ).sort((a, b) => b.people.length - a.people.length || a.name.localeCompare(b.name));
+
+  const statusFor = (person) => {
+    if (person.isPlaceholder) return "Needs identification";
+    if (person.isIdentityOwner) return "Claimed by you";
+    if (person.isClaimed) return "Claimed profile";
+    if (person.confirmationCount > 0)
+      return `Confirmed by ${person.confirmationCount} relative${person.confirmationCount === 1 ? "" : "s"}`;
+    return "Unclaimed";
+  };
+
   return (
     <div className="page inner-page">
       <div className="section-heading">
         <div>
           <span className="eyebrow">YOUR RECORDS</span>
           <h1>My family</h1>
-          <p>
-            People and family names you have added or that family shared with
-            you.
-          </p>
+          <p>People and family names you have added or that family shared with you.</p>
         </div>
         <div className="heading-actions">
+          <button className="quiet" onClick={openVoice}>
+            <Sparkles size={17} /> Voice entry
+          </button>
           <button className="quiet" onClick={openMerge}>
             <Link2 size={17} /> Merge duplicates
           </button>
@@ -936,99 +1026,85 @@ function Family({ people, openAdd, editPerson, deletePerson, invitePerson, openM
           </button>
         </div>
       </div>
-      <div className="toolbar">
+      <div className="toolbar family-toolbar">
         <div className="search-box">
           <Search size={17} />
-          <input placeholder="Find someone" />
+          <input
+            placeholder="Find someone"
+            value={localQuery}
+            onChange={(event) => setLocalQuery(event.target.value)}
+          />
         </div>
-        <button className="filter">
-          <ListFilter size={17} /> All branches
-        </button>
+        <label className="filter select-filter">
+          <ListFilter size={17} />
+          <select value={branchFilter} onChange={(event) => setBranchFilter(event.target.value)} aria-label="Filter family branch">
+            <option value="all">All branches</option>
+            {branches.map((branch) => <option key={branch} value={branch}>{branch}</option>)}
+          </select>
+        </label>
+        <div className="segmented-control" role="group" aria-label="Family list view">
+          <button className={viewMode === "people" ? "active" : ""} onClick={() => setViewMode("people")}>People</button>
+          <button className={viewMode === "surnames" ? "active" : ""} onClick={() => setViewMode("surnames")}>Surnames</button>
+        </div>
       </div>
-      <div className="people-grid">
-        {people.map((person) => (
-          <article
-            className={`person-card ${person.isPlaceholder ? "placeholder-card" : ""}`}
-            key={person.id}
-          >
-            <div className="person-card-top">
-              <Avatar person={person} size="large" />
-              <span className="verified">
-                <Check size={12} />{" "}
-                {person.isPlaceholder
-                  ? "Missing person slot"
-                  : person.isIdentityOwner
-                    ? "Your verified profile"
-                    : person.isClaimed
-                      ? "Claimed profile"
-                      : person.isSelf
-                        ? "Your profile"
-                        : "Unclaimed family record"}
-              </span>
-            </div>
-            <h3>{person.name}</h3>
-            <p>
-              {person.isPlaceholder
-                ? "Name, dates and locations have not been identified yet."
-                : person.birthYear
-                  ? `Born ${person.birthYear}${person.birthPlace ? ` in ${person.birthPlace}` : ""}`
-                  : "Birth year unknown"}
-            </p>
-            <div className="person-meta">
-              <span>
-                <GitFork size={14} /> {person.side}
-              </span>
-              {person.maidenName && <span>née {person.maidenName}</span>}
-              {person.livedLocations.map((location) => (
-                <span
-                  key={location.residenceId || location.providerId}
-                  title={residencePeriod(location) || undefined}
-                >
-                  <MapPin size={12} /> {residenceLabel(location)}
-                </span>
-              ))}
-              {person.canEdit &&
-                (person.legacyLivedIn || person.legacyBirthPlace) && (
-                  <button
-                    className="legacy-chip"
-                    onClick={() => editPerson(person)}
-                  >
-                    <MapPin size={12} /> Tap to correct location
-                  </button>
-                )}
-            </div>
-            <div className="person-actions">
-              {person.canEdit ? (
-                <button onClick={() => editPerson(person)}>
-                  {person.isPlaceholder ? "Fill this slot" : "Edit details"}{" "}
-                  <ArrowRight size={14} />
-                </button>
-              ) : person.canSuggest ? (
-                <button onClick={() => editPerson(person)}>
-                  Suggest correction <ArrowRight size={14} />
-                </button>
-              ) : (
-                <span>Read-only shared record</span>
-              )}
-              <div>
-                {!person.isSelf && !person.linkedUserId && (
-                  <button onClick={() => invitePerson(person)}>
-                    <UserPlus size={13} /> Invite
-                  </button>
-                )}
-                {person.canDelete && (
-                  <button
-                    className="delete-person"
-                    onClick={() => deletePerson(person)}
-                  >
-                    <Trash2 size={13} /> Delete
-                  </button>
-                )}
+      {viewMode === "surnames" ? (
+        <div className="surname-directory">
+          {surnameRows.map((surname) => (
+            <section className="panel surname-directory-card" key={surname.name}>
+              <div><span className="surname-num">{surname.name[0]}</span><div><h2>{surname.name}</h2><p>{surname.people.length} people · {[...surname.places].slice(0, 3).join(" · ") || "No places recorded"}</p></div></div>
+              <div className="detail-relations">
+                {surname.people.map((person) => <button key={person.id} onClick={() => openPerson(person)}>{person.name}<small>{branchFor(person)}</small></button>)}
               </div>
-            </div>
-          </article>
-        ))}
-      </div>
+            </section>
+          ))}
+          {!surnameRows.length && <div className="empty"><Search /><h3>No surnames match</h3><p>Change the search or branch filter.</p></div>}
+        </div>
+      ) : (
+        <div className="people-grid">
+          {filteredPeople.map((person) => (
+            <article className={`person-card ${person.isPlaceholder ? "placeholder-card" : ""}`} key={person.id}>
+              <button className="person-card-main" onClick={() => openPerson(person)}>
+                <div className="person-card-top">
+                  <Avatar person={person} size="large" />
+                  <span className={`record-status ${person.isClaimed ? "claimed" : person.isPlaceholder ? "needs-review" : "unclaimed"}`}>
+                    {person.isClaimed && <ShieldCheck size={12} />} {statusFor(person)}
+                  </span>
+                </div>
+                <h3>{person.name}</h3>
+                <p>
+                  {person.isPlaceholder
+                    ? "Name, dates and locations have not been identified yet."
+                    : person.birthYear
+                      ? `Born ${person.birthApproximate ? "circa " : ""}${person.birthYear}${person.birthPlace ? ` in ${person.birthPlace}` : ""}`
+                      : "Birth year unknown"}
+                </p>
+                <div className="person-meta">
+                  <span><GitFork size={14} /> {branchFor(person)}</span>
+                  {person.maidenName && <span>née {person.maidenName}</span>}
+                  {person.deathYear && <span>Died {person.deathYear}</span>}
+                  {person.livedLocations.map((location) => (
+                    <span key={location.residenceId || location.providerId} title={residencePeriod(location) || undefined}>
+                      <MapPin size={12} /> {residenceLabel(location)}
+                    </span>
+                  ))}
+                </div>
+              </button>
+              <div className="person-actions">
+                {person.canEdit ? (
+                  <button onClick={() => editPerson(person)}>{person.isPlaceholder ? "Fill this slot" : "Edit details"} <ArrowRight size={14} /></button>
+                ) : person.canSuggest ? (
+                  <button onClick={() => editPerson(person)}>Suggest correction <ArrowRight size={14} /></button>
+                ) : <span>Read-only shared record</span>}
+                <div>
+                  {!person.isSelf && !person.linkedUserId && <button onClick={() => invitePerson(person)}><UserPlus size={13} /> Invite</button>}
+                  {person.canDelete && <button className="delete-person" onClick={() => deletePerson(person)}><Trash2 size={13} /> Delete</button>}
+                </div>
+              </div>
+            </article>
+          ))}
+          {!filteredPeople.length && <div className="empty"><Search /><h3>No people match</h3><p>Change the search or branch filter.</p></div>}
+        </div>
+      )}
     </div>
   );
 }
@@ -1043,6 +1119,18 @@ function Tree({
 }) {
   const [view, setView] = useState("traditional");
   const [degreeLimit, setDegreeLimit] = useState("2");
+  const [focusId, setFocusId] = useState(people.find((person) => person.isSelf)?.id || people[0]?.id || "");
+  const [zoom, setZoom] = useState(1);
+  const [generationFilter, setGenerationFilter] = useState("all");
+  const [branchFilter, setBranchFilter] = useState("all");
+  const releaseVerticalWheel = (event) => {
+    if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
+    const viewport = event.currentTarget;
+    const hasInternalVerticalScroll = viewport.scrollHeight > viewport.clientHeight + 2;
+    if (hasInternalVerticalScroll) return;
+    event.preventDefault();
+    window.scrollBy({ top: event.deltaY, behavior: "auto" });
+  };
   const traditionalCanvasRef = useRef(null);
   const traditionalUnitRefs = useRef(new Map());
   const [traditionalLines, setTraditionalLines] = useState({
@@ -1050,7 +1138,8 @@ function Tree({
     height: 0,
     paths: [],
   });
-  const root = people.find((person) => person.isSelf) || people[0];
+  const selfRoot = people.find((person) => person.isSelf) || people[0];
+  const root = people.find((person) => person.id === focusId) || selfRoot;
   const levels = root ? { [root.id]: 0 } : {};
   for (let pass = 0; pass < people.length; pass += 1) {
     relationships.forEach((relationship) => {
@@ -1086,7 +1175,19 @@ function Tree({
   }
   const maximumDistance =
     degreeLimit === "all" ? Infinity : Number(degreeLimit);
-  const networkPeople = people.filter(
+  const branchForTree = (person) => deriveBranchLabel(person.id, selfRoot?.id, people, relationships);
+  const branchOptions = [...new Set(people.map(branchForTree))].filter(Boolean).sort();
+  const generationVisible = (person) => {
+    const level = levels[person.id] ?? 0;
+    if (generationFilter === "ancestors") return level < 0;
+    if (generationFilter === "same") return level === 0;
+    if (generationFilter === "descendants") return level > 0;
+    return true;
+  };
+  const treePeople = people.filter((person) =>
+    (branchFilter === "all" || branchForTree(person) === branchFilter) && generationVisible(person),
+  );
+  const networkPeople = treePeople.filter(
     (person) => (distances[person.id] ?? Infinity) <= maximumDistance,
   );
   const visibleIds = new Set(networkPeople.map((person) => person.id));
@@ -1127,6 +1228,11 @@ function Tree({
     ),
   );
   const peopleById = new Map(people.map((person) => [person.id, person]));
+  const focusPath = selfRoot && root ? shortestRelationshipPath(selfRoot.id, root.id, relationships) : [];
+  const focusPathPairs = new Set(focusPath.slice(1).map((id, index) => [focusPath[index], id].sort().join(":")));
+  const focusPathLabel = focusPath.length > 1
+    ? focusPath.map((id) => peopleById.get(id)?.firstName || "Unknown").join(" → ")
+    : root?.id === selfRoot?.id ? "This is you" : "No recorded path";
   const displayParents = new Map(
     people.map((person) => [person.id, new Set()]),
   );
@@ -1165,7 +1271,7 @@ function Tree({
     traditionalUnits.push(unit);
     assignedUnit.set(person.id, unit.id);
   };
-  people.forEach(addUnit);
+  treePeople.forEach(addUnit);
   const directlyRelatedAsSiblings = (personAId, personBId) =>
     relationships.some(
       (relationship) =>
@@ -1294,6 +1400,8 @@ function Tree({
               {
                 key: edge.key,
                 kind: "partner",
+                from: edge.from,
+                to: edge.to,
                 d: `M ${fromX} ${fromY} L ${toX} ${toY}`,
               },
             ];
@@ -1308,6 +1416,8 @@ function Tree({
             {
               key: edge.key,
               kind: "parent",
+              from: edge.from,
+              to: edge.to,
               d: `M ${fromX} ${fromY} V ${middleY} H ${toX} V ${toY}`,
             },
           ];
@@ -1380,23 +1490,18 @@ function Tree({
       children.length ? `Parent of ${names(children)}` : null,
     ].filter(Boolean);
   };
-  const renderTreePerson = (person, index, unitLength) => (
+  const renderTreePerson = (person, index, unitLength) => {
+    const hasHalfSibling = siblingDetailsFor(person.id, relationships).some((item) => item.kind === "half");
+    return (
     <div
-      className={`traditional-person ${person.isPlaceholder ? "placeholder-person" : ""}`}
+      className={`traditional-person ${person.isPlaceholder ? "placeholder-person" : ""} ${focusPath.includes(person.id) ? "path-highlight" : ""}`}
       key={person.id}
     >
       <button
         type="button"
         className="tree-person-edit"
-        onClick={() => (person.canEdit || person.canSuggest) && editPerson(person)}
-        disabled={!person.canEdit && !person.canSuggest}
-        title={
-          person.canEdit
-            ? `Edit ${person.name}`
-            : person.canSuggest
-              ? `Suggest a correction for ${person.name}`
-              : person.name
-        }
+        onClick={() => editPerson(person)}
+        title={`Open ${person.name}'s profile`}
       >
         <Avatar person={person} />
         <strong>
@@ -1409,11 +1514,8 @@ function Tree({
             <small key={label}>{label}</small>
           ))}
         </div>
-        {(person.canEdit || person.canSuggest) && (
-          <small className="edit-hint">
-            {person.canEdit ? "Tap to edit details" : "Tap to suggest a correction"}
-          </small>
-        )}
+        {hasHalfSibling && <small className="half-sibling-badge">½ Half-sibling branch</small>}
+        <small className="edit-hint">Open profile</small>
       </button>
       <button
         onClick={() => addRelative(person)}
@@ -1432,6 +1534,7 @@ function Tree({
       {index === 0 && unitLength === 2 && <i className="couple-link" />}
     </div>
   );
+  };
   const renderTraditionalUnit = (unit) => (
     <div
       className={`traditional-unit ${unit.members.length === 1 ? "single" : "couple"}`}
@@ -1455,8 +1558,7 @@ function Tree({
           <span className="eyebrow">RELATIONSHIP MAP</span>
           <h1>Your family, connected</h1>
           <p>
-            Tap a person to edit their details, or use + to add someone directly
-            around them.
+            Tap a person to open their profile. Use + to add someone directly around them, then focus, filter or zoom the graph for large families.
           </p>
         </div>
         <div className="legend">
@@ -1485,6 +1587,37 @@ function Tree({
           <Network size={16} /> Connection map
         </button>
       </div>
+      <div className="tree-interaction-toolbar panel">
+        <label>Focus on person
+          <select value={root?.id || ""} onChange={(event) => setFocusId(event.target.value)}>
+            {people.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}
+          </select>
+        </label>
+        <label>Generation
+          <select value={generationFilter} onChange={(event) => setGenerationFilter(event.target.value)}>
+            <option value="all">All generations</option>
+            <option value="ancestors">Ancestors</option>
+            <option value="same">Same generation</option>
+            <option value="descendants">Descendants</option>
+          </select>
+        </label>
+        <label>Branch visibility
+          <select value={branchFilter} onChange={(event) => setBranchFilter(event.target.value)}>
+            <option value="all">All branches</option>
+            {branchOptions.map((branch) => <option key={branch} value={branch}>{branch}</option>)}
+          </select>
+        </label>
+        <div className="zoom-controls" aria-label="Tree zoom controls">
+          <button className="quiet" onClick={() => setZoom((value) => Math.max(.7, +(value - .15).toFixed(2)))} aria-label="Zoom out">−</button>
+          <span>{Math.round(zoom * 100)}%</span>
+          <button className="quiet" onClick={() => setZoom((value) => Math.min(2.2, +(value + .15).toFixed(2)))} aria-label="Zoom in">+</button>
+          <button className="text-button" onClick={() => setZoom(1)}>Reset</button>
+        </div>
+        <div className="relationship-path-summary">
+          <strong>How is {root?.firstName || "this person"} related to me?</strong>
+          <span>{focusPathLabel}{focusPath.length > 1 ? ` · ${focusPath.length - 1} connection${focusPath.length === 2 ? "" : "s"}` : ""}</span>
+        </div>
+      </div>
       <button className="link-existing-button" onClick={openLinkPeople}>
         <Link2 size={15} /> Link existing people
       </button>
@@ -1497,8 +1630,8 @@ function Tree({
         </span>
       </div>
       {view === "traditional" && (
-        <section className="traditional-tree">
-          <div className="traditional-canvas" ref={traditionalCanvasRef}>
+        <section className="traditional-tree tree-pan-viewport" onWheel={releaseVerticalWheel}>
+          <div className="traditional-canvas" ref={traditionalCanvasRef} style={{ width: `${Math.max(100, 100 * zoom)}%`, minHeight: `${Math.max(100, 100 * zoom)}%` }}>
             <svg
               className="traditional-connectors"
               width={traditionalLines.width}
@@ -1507,7 +1640,7 @@ function Tree({
               aria-hidden="true"
             >
               {traditionalLines.paths.map((path) => (
-                <path key={path.key} d={path.d} className={path.kind === "partner" ? "partner-line" : ""} />
+                <path key={path.key} d={path.d} className={`${path.kind === "partner" ? "partner-line" : ""} ${focusPathPairs.has([path.from, path.to].sort().join(":")) ? "path-highlight-line" : ""}`} />
               ))}
             </svg>
             {traditionalRows.map((row) => (
@@ -1552,7 +1685,8 @@ function Tree({
               <Network size={16} /> Interactive family map{" "}
               <span>Live graph</span>
             </div>
-            <div className="family-map">
+            <div className="tree-pan-viewport network-pan-viewport">
+            <div className="family-map" style={{ width: `${Math.max(100, 100 * zoom)}%`, minHeight: `${Math.max(600, 600 * zoom)}px` }}>
               <svg
                 viewBox="0 0 100 100"
                 preserveAspectRatio="none"
@@ -1569,13 +1703,13 @@ function Tree({
                       y1={a[1]}
                       x2={b[0]}
                       y2={b[1]}
-                      className={
+                      className={`${
                         ["spouse", "partner"].includes(rel.type)
                           ? "spouse"
                           : rel.type.includes("cousin")
                             ? "cousin"
                             : rel.type
-                      }
+                      } ${focusPathPairs.has([rel.from, rel.to].sort().join(":")) ? "path-highlight-line" : ""}`}
                     />
                   );
                 })}
@@ -1584,7 +1718,7 @@ function Tree({
                 .filter((person) => positions[person.id])
                 .map((person) => (
                   <div
-                    className={`map-person ${person.isPlaceholder ? "placeholder-person" : ""}`}
+                    className={`map-person ${person.isPlaceholder ? "placeholder-person" : ""} ${focusPath.includes(person.id) ? "path-highlight" : ""}`}
                     style={{
                       left: `${positions[person.id][0]}%`,
                       top: `${positions[person.id][1]}%`,
@@ -1594,17 +1728,8 @@ function Tree({
                     <button
                       type="button"
                       className="map-person-edit"
-                      onClick={() =>
-                        (person.canEdit || person.canSuggest) && editPerson(person)
-                      }
-                      disabled={!person.canEdit && !person.canSuggest}
-                      title={
-                        person.canEdit
-                          ? `Edit ${person.name}`
-                          : person.canSuggest
-                            ? `Suggest a correction for ${person.name}`
-                            : person.name
-                      }
+                      onClick={() => editPerson(person)}
+                      title={`Open ${person.name}'s profile`}
                     >
                       <Avatar person={person} />
                       <strong>
@@ -1616,6 +1741,7 @@ function Tree({
                           ? "Details missing"
                           : person.surname}
                       </span>
+                      {siblingDetailsFor(person.id, relationships).some((item) => item.kind === "half") && <small className="half-sibling-badge">½ half-sibling</small>}
                     </button>
                     <button
                       className="map-add"
@@ -1646,6 +1772,7 @@ function Tree({
                 </div>
               )}
             </div>
+            </div>
           </section>
         </>
       )}
@@ -1672,15 +1799,21 @@ function Connections({
   matches,
   identityCandidates,
   inbox,
+  familyUpdates = [],
+  invitations = [],
+  markFamilyUpdatesRead,
   connect,
   requestIdentity,
   dismissIdentity,
   respondInbox,
+  revokeInvite,
+  resendInvite,
 }) {
   const [reviewingFamily, setReviewingFamily] = useState(null);
   const [reviewingIdentity, setReviewingIdentity] = useState(null);
   const [busyId, setBusyId] = useState("");
   const [error, setError] = useState("");
+  const reviewDialogRef = useDialogAccessibility(() => { setReviewingIdentity(null); setReviewingFamily(null); }, Boolean(reviewingIdentity || reviewingFamily));
   const incoming = inbox.filter(
     (item) => item.direction === "incoming" && item.status === "pending",
   );
@@ -1793,6 +1926,67 @@ function Connections({
             <h3>No decisions waiting</h3>
             <p>New claims, invitations and corrections will appear here.</p>
           </div>
+        )}
+      </section>
+
+      <section className="connection-section">
+        <div className="subsection-heading">
+          <div>
+            <span className="mini-title">FAMILY TREE UPDATES</span>
+            <h2>Changes made by relatives</h2>
+            <p>When someone who shares this tree adds or changes family information, the update appears here.</p>
+          </div>
+          {familyUpdates.some((item) => !item.read_at) && (
+            <button type="button" className="quiet" onClick={markFamilyUpdatesRead}>Mark all read</button>
+          )}
+        </div>
+        {familyUpdates.length ? (
+          <div className="request-list">
+            {familyUpdates.slice(0, 30).map((item) => (
+              <article className={`request-card slim family-update ${item.read_at ? "" : "unread"}`} key={item.notification_id}>
+                <div>
+                  <strong>{item.actor_name || "A relative"}</strong>
+                  <span>{item.summary}</span>
+                  <small>{new Date(item.created_at).toLocaleString()}</small>
+                </div>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <div className="panel empty compact-empty"><Bell size={22} /><h3>No family updates yet</h3><p>Edits from relatives who share your tree will appear here.</p></div>
+        )}
+      </section>
+
+      <section className="connection-section">
+        <div className="subsection-heading">
+          <div>
+            <span className="mini-title">INVITATION MANAGEMENT</span>
+            <h2>Invitations you have sent</h2>
+            <p>Pending invitations can be resent or revoked. Invitations expire automatically.</p>
+          </div>
+        </div>
+        {invitations.filter((item) => item.direction === "outgoing").length ? (
+          <div className="request-list">
+            {invitations.filter((item) => item.direction === "outgoing").map((item) => (
+              <article className="request-card slim invitation-activity" key={item.invitation_id}>
+                <div>
+                  <strong>{item.person_name}</strong>
+                  <span>{item.email} · {item.scope} · {item.status}</span>
+                  <small>Sent {new Date(item.created_at).toLocaleDateString()} · expires {new Date(item.expires_at).toLocaleDateString()}</small>
+                </div>
+                <div className="request-actions">
+                  {["pending", "expired"].includes(item.status) && (
+                    <button className="quiet" disabled={busyId === item.invitation_id} onClick={() => act(item.invitation_id, () => resendInvite(item))}>Resend</button>
+                  )}
+                  {item.status === "pending" && (
+                    <button className="quiet danger-text" disabled={busyId === item.invitation_id} onClick={() => act(item.invitation_id, () => revokeInvite(item))}>Revoke</button>
+                  )}
+                </div>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <div className="panel empty compact-empty"><Mail size={22} /><h3>No invitations sent yet</h3><p>Invite an unclaimed family member from their person profile.</p></div>
         )}
       </section>
 
@@ -1933,7 +2127,7 @@ function Connections({
       {reviewingIdentity && (
         <div className="modal-wrap">
           <button className="modal-scrim" onClick={() => setReviewingIdentity(null)} />
-          <div className="review-modal">
+          <div ref={reviewDialogRef} className="review-modal" role="dialog" aria-modal="true" aria-label="Review connection request" tabIndex={-1}>
             <button className="modal-close" onClick={() => setReviewingIdentity(null)}>
               <X />
             </button>
@@ -1984,7 +2178,7 @@ function Connections({
       {reviewingFamily && (
         <div className="modal-wrap">
           <button className="modal-scrim" onClick={() => setReviewingFamily(null)} />
-          <div className="review-modal">
+          <div ref={reviewDialogRef} className="review-modal" role="dialog" aria-modal="true" aria-label="Review connection request" tabIndex={-1}>
             <button className="modal-close" onClick={() => setReviewingFamily(null)}>
               <X />
             </button>
@@ -2035,14 +2229,56 @@ function Connections({
   );
 }
 
-function InviteModal({ person, close }) {
+
+function IdentitySuggestionPrompt({ candidate, close, requestIdentity, dismissIdentity }) {
+  const [busy, setBusy] = useState("");
+  const [error, setError] = useState("");
+  if (!candidate) return null;
+  const act = async (kind) => {
+    setBusy(kind);
+    setError("");
+    try {
+      if (kind === "claim") await requestIdentity(candidate);
+      else await dismissIdentity(candidate);
+      close();
+    } catch (actionError) {
+      setError(actionError.message || "Could not update this identity suggestion.");
+      setBusy("");
+    }
+  };
+  return (
+    <AccessibleModal close={close} className="review-modal identity-first-run-modal" label="Possible identity match">
+      <button className="modal-close" onClick={close} aria-label="Close identity suggestion"><X /></button>
+      <span className="mini-title"><ShieldCheck size={14} /> POSSIBLE IDENTITY MATCH</span>
+      <Avatar person={candidate} size="large" />
+      <h2>Could this existing family record be you?</h2>
+      <p>
+        Vansh found a strong combination of matching details. Nothing is linked automatically. If you say this is you, the record owner must separately approve the claim.
+      </p>
+      <div className="review-reasons">
+        {(candidate.shared || []).map((item) => <span key={item}><Check size={15} /> {item}</span>)}
+      </div>
+      <div className="identity-prompt-summary">
+        <strong>{candidate.name}</strong>
+        <span>{candidate.details}</span>
+        <small>{candidate.personCode} · match score {candidate.score}</small>
+      </div>
+      {error && <div className="auth-message">{error}</div>}
+      <button className="primary" disabled={Boolean(busy)} onClick={() => act("claim")}>
+        {busy === "claim" ? <LoaderCircle className="spin" size={16} /> : <ShieldCheck size={16} />} Yes, this is me — request verification
+      </button>
+      <button className="quiet" disabled={Boolean(busy)} onClick={() => act("dismiss")}>No, this is not me</button>
+      <button className="text-button" disabled={Boolean(busy)} onClick={close}>Review later in Connections</button>
+    </AccessibleModal>
+  );
+}
+
+function InviteModal({ person, close, onSent }) {
+  const dialogRef = useDialogAccessibility(close);
   const [email, setEmail] = useState("");
   const [scope, setScope] = useState("connection");
-  const [counts, setCounts] = useState({
-    connection: null,
-    immediate: null,
-    extended: null,
-  });
+  const [previews, setPreviews] = useState({ connection: [], immediate: [], extended: [] });
+  const [showPreview, setShowPreview] = useState(false);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
   const [sent, setSent] = useState(null);
@@ -2050,24 +2286,15 @@ function InviteModal({ person, close }) {
   useEffect(() => {
     let active = true;
     Promise.all([
-      supabase.rpc("preview_family_invitation_scope", {
-        p_person_id: person.id,
-        p_scope: "connection",
-      }),
-      supabase.rpc("preview_family_invitation_scope", {
-        p_person_id: person.id,
-        p_scope: "immediate",
-      }),
-      supabase.rpc("preview_family_invitation_scope", {
-        p_person_id: person.id,
-        p_scope: "extended",
-      }),
+      supabase.rpc("preview_family_invitation_people", { p_person_id: person.id, p_scope: "connection" }),
+      supabase.rpc("preview_family_invitation_people", { p_person_id: person.id, p_scope: "immediate" }),
+      supabase.rpc("preview_family_invitation_people", { p_person_id: person.id, p_scope: "extended" }),
     ]).then(([connection, immediate, extended]) => {
       if (active)
-        setCounts({
-          connection: connection.data,
-          immediate: immediate.data,
-          extended: extended.data,
+        setPreviews({
+          connection: connection.data || [],
+          immediate: immediate.data || [],
+          extended: extended.data || [],
         });
     });
     return () => {
@@ -2098,13 +2325,14 @@ function InviteModal({ person, close }) {
       return;
     }
     setSent(data);
+    onSent?.();
     setSending(false);
   };
 
   return (
     <div className="modal-wrap">
       <button className="modal-scrim" onClick={close} />
-      <form className="add-modal invite-modal" onSubmit={submit}>
+      <form ref={dialogRef} className="add-modal invite-modal" onSubmit={submit} role="dialog" aria-modal="true" aria-label={`Invite ${person.name}`} tabIndex={-1}>
         <button type="button" className="modal-close" onClick={close}>
           <X />
         </button>
@@ -2158,9 +2386,7 @@ function InviteModal({ person, close }) {
                 <span>
                   <strong>How we are connected · Recommended</strong>
                   <small>
-                    Shares {counts.connection ?? "…"} people along your known
-                    connection path, plus siblings around each connecting
-                    generation. Spouse branches stay private.
+                    Shares only {person.firstName}&apos;s invited record ({previews.connection.length || "…"} person).
                   </small>
                 </span>
               </label>
@@ -2175,9 +2401,7 @@ function InviteModal({ person, close }) {
                 <span>
                   <strong>Immediate family</strong>
                   <small>
-                    Shares {counts.immediate ?? "…"} people through parent,
-                    child, sibling and blood-family links. Spouse-family
-                    branches stay private.
+                    Shares {previews.immediate.length || "…"} people within one recorded relationship of {person.firstName}.
                   </small>
                 </span>
               </label>
@@ -2192,12 +2416,22 @@ function InviteModal({ person, close }) {
                 <span>
                   <strong>Extended family</strong>
                   <small>
-                    Shares {counts.extended ?? "…"} people, including spouse or
-                    partner branches and their connected family.
+                    Shares {previews.extended.length || "…"} people within two recorded relationship steps, including partner branches.
                   </small>
                 </span>
               </label>
             </fieldset>
+            <button type="button" className="quiet preview-shared-button" onClick={() => setShowPreview((value) => !value)}>
+              <UsersRound size={15} /> {showPreview ? "Hide shared people" : "Preview shared people"}
+            </button>
+            {showPreview && (
+              <div className="shared-people-preview">
+                <strong>{previews[scope].length} people will be visible</strong>
+                {previews[scope].map((item) => (
+                  <span key={item.member_id}><Check size={12} /> {item.display_name}<small>{item.relationship_hint}</small></span>
+                ))}
+              </div>
+            )}
             <div className="invite-notice">
               <ShieldCheck size={17} />
               <span>
@@ -2236,6 +2470,7 @@ function PlaceholderModal({
   close,
   addPlaceholders,
 }) {
+  const dialogRef = useDialogAccessibility(close);
   const [count, setCount] = useState(Math.max(1, existingSiblingCount));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -2257,7 +2492,7 @@ function PlaceholderModal({
   return (
     <div className="modal-wrap">
       <button className="modal-scrim" onClick={close} />
-      <form className="review-modal placeholder-modal" onSubmit={submit}>
+      <form ref={dialogRef} className="review-modal placeholder-modal" onSubmit={submit} role="dialog" aria-modal="true" aria-label="Add unknown sibling placeholders" tabIndex={-1}>
         <button type="button" className="modal-close" onClick={close}>
           <X />
         </button>
@@ -2326,6 +2561,7 @@ function PlaceholderModal({
 }
 
 function LinkPeopleModal({ people, relationships, close, linkPeople }) {
+  const dialogRef = useDialogAccessibility(close);
   const firstPerson =
     people.find((person) => !person.isPlaceholder) || people[0];
   const [personAId, setPersonAId] = useState(firstPerson?.id || "");
@@ -2398,7 +2634,7 @@ function LinkPeopleModal({ people, relationships, close, linkPeople }) {
   return (
     <div className="modal-wrap">
       <button className="modal-scrim" onClick={close} />
-      <form className="add-modal link-people-modal" onSubmit={submit}>
+      <form ref={dialogRef} className="add-modal link-people-modal" onSubmit={submit} role="dialog" aria-modal="true" aria-label="Link existing family members" tabIndex={-1}>
         <button type="button" className="modal-close" onClick={close}>
           <X />
         </button>
@@ -2554,6 +2790,7 @@ function LinkPeopleModal({ people, relationships, close, linkPeople }) {
 }
 
 function MergePeopleModal({ people, close, mergePeople }) {
+  const dialogRef = useDialogAccessibility(close);
   const eligible = people.filter(
     (person) =>
       !person.isPlaceholder &&
@@ -2620,7 +2857,7 @@ function MergePeopleModal({ people, close, mergePeople }) {
   return (
     <div className="modal-wrap">
       <button className="modal-scrim" onClick={close} />
-      <form className="add-modal merge-modal" onSubmit={submit}>
+      <form ref={dialogRef} className="add-modal merge-modal" onSubmit={submit} role="dialog" aria-modal="true" aria-label="Merge duplicate family records" tabIndex={-1}>
         <button type="button" className="modal-close" onClick={close}>
           <X />
         </button>
@@ -2765,59 +3002,112 @@ function PersonModal({
   relationships,
   anchor = null,
   person = null,
+  draft = null,
+  initialStep = 1,
 }) {
+  const dialogRef = useDialogAccessibility(close);
   const initialAnchor =
     anchor || people.find((item) => item.isSelf) || people[0] || null;
-  const relationshipSuggestions = (anchorId, relationValue) => {
-    const relation = RELATION_OPTIONS.find(
-      (option) => option.value === relationValue,
-    );
-    const parents = relationships
-      .filter((item) => item.type === "parent" && item.to === anchorId)
-      .map((item) => item.from);
-    const partners = relationships
+  const parentLinksFor = (personId) =>
+    relationships
+      .filter((item) => item.type === "parent" && item.to === personId)
+      .map((item) => ({
+        key: item.id,
+        relationshipId: item.id,
+        mode: "existing",
+        personId: item.from,
+        variant: item.variant || "biological",
+        placeholderLabel: "",
+        placeholderGender: "unspecified",
+      }));
+  const partnerLinksFor = (personId) =>
+    relationships
       .filter(
         (item) =>
           ["spouse", "partner"].includes(item.type) &&
-          (item.from === anchorId || item.to === anchorId),
+          (item.from === personId || item.to === personId),
       )
-      .map((item) => (item.from === anchorId ? item.to : item.from));
-    const suggestedParentIds =
-      relation?.type === "sibling"
-        ? parents
-        : relation?.direction === "from-anchor"
-          ? partners
-          : [];
-    const suggestedSpouseId =
-      relation?.type === "parent" && relation?.direction === "to-anchor"
-        ? parents[0] || ""
-        : "";
-    return { suggestedParentIds, suggestedSpouseId };
+      .map((item) => ({
+        key: item.id,
+        relationshipId: item.id,
+        mode: "existing",
+        personId: item.from === personId ? item.to : item.from,
+        type: item.type,
+        variant: item.variant || (item.endYear ? "former" : "current"),
+        startYear: item.startYear?.toString() || "",
+        endYear: item.endYear?.toString() || "",
+        placeholderLabel: "",
+        placeholderGender: "unspecified",
+        alsoParentOfAnchor: false,
+      }));
+  const suggestedParentLinks = (anchorId, relationValue) => {
+    const relation = RELATION_OPTIONS.find((option) => option.value === relationValue);
+    const anchorParents = relationships
+      .filter((item) => item.type === "parent" && item.to === anchorId)
+      .map((item) => ({
+        key: `suggested-${item.id}`,
+        relationshipId: null,
+        mode: "existing",
+        personId: item.from,
+        variant: item.variant || "biological",
+      }));
+    if (relation?.type === "sibling") return anchorParents;
+    if (relation?.type === "parent" && relation?.direction === "from-anchor") {
+      const anchorParent = {
+        key: `anchor-parent-${anchorId}`,
+        relationshipId: null,
+        mode: "existing",
+        personId: anchorId,
+        variant: "biological",
+      };
+      const coParents = relationships
+        .filter(
+          (item) =>
+            ["spouse", "partner"].includes(item.type) &&
+            (item.from === anchorId || item.to === anchorId),
+        )
+        .map((item) => ({
+          key: `co-parent-${item.id}`,
+          relationshipId: null,
+          mode: "existing",
+          personId: item.from === anchorId ? item.to : item.from,
+          variant: "biological",
+        }));
+      return [anchorParent, ...coParents];
+    }
+    return [];
   };
-  const initialSuggestions = relationshipSuggestions(
-    initialAnchor?.id,
-    "father",
-  );
-  const [step, setStep] = useState(1);
+  const initialRelation = draft?.relation || "father";
+  const initialAnchorId = draft?.anchorId || initialAnchor?.id || "";
+  const initialParentLinks = person
+    ? parentLinksFor(person.id)
+    : suggestedParentLinks(initialAnchorId, initialRelation);
+  const initialPartnerLinks = person ? partnerLinksFor(person.id) : [];
+  const [step, setStep] = useState(initialStep);
   const [form, setForm] = useState({
-    firstName: person?.firstName || "",
+    firstName: person?.firstName || draft?.firstName || "",
     nickname: person?.nickname || "",
-    surname: person?.surname || "",
+    surname: person?.surname || draft?.surname || anchor?.surname || "",
     maidenName: person?.maidenName || "",
     birthDate: person?.birthDate || "",
-    birthYear: person?.birthYear || "",
+    birthYear: person?.birthYear || draft?.birthYear || "",
+    birthApproximate: person?.birthApproximate || false,
     birthLocation: person?.birthLocation || null,
     livedLocations: person?.livedLocations || [],
-    relation: "father",
-    anchorId: initialAnchor?.id || "",
+    deathDate: person?.deathDate || "",
+    deathYear: person?.deathYear || "",
+    deathApproximate: person?.deathApproximate || false,
+    deathLocation: person?.deathLocation || null,
+    relation: initialRelation,
+    anchorId: initialAnchorId,
     gender: person?.gender || "unspecified",
-    side: person?.side || anchor?.side || "Mother's side",
-    parentIds: initialSuggestions.suggestedParentIds,
-    spouseMode: initialSuggestions.suggestedSpouseId ? "existing" : "none",
-    spouseId: initialSuggestions.suggestedSpouseId,
-    newSpouseName: "",
-    spouseIsParent: true,
+    factConfidence: person?.factConfidence || "reported",
+    provenanceNote: person?.provenanceNote || (draft?.statement ? `Voice-assisted draft: ${draft.statement}` : ""),
+    privacyLevel: person?.privacyLevel || "family",
+    parentLinks: ensureTwoParentRows(initialParentLinks),
+    partnerLinks: initialPartnerLinks,
     marriageYear: "",
+    relationshipEndYear: "",
     parentVariant: "biological",
     partnershipVariant: "current",
   });
@@ -2826,51 +3116,26 @@ function PersonModal({
   const [duplicateCandidates, setDuplicateCandidates] = useState([]);
   const update = (e) => setForm({ ...form, [e.target.name]: e.target.value });
   const updateRelation = (event) => {
-    const relation = RELATION_OPTIONS.find(
-      (option) => option.value === event.target.value,
-    );
-    setForm((current) => {
-      const suggestions = relationshipSuggestions(
-        current.anchorId,
-        relation.value,
-      );
-      return {
-        ...current,
-        relation: relation.value,
-        gender: relation.gender,
-        side:
-          relation.value === "father"
-            ? "Father's side"
-            : relation.value === "mother"
-              ? "Mother's side"
-              : current.side,
-        parentIds: suggestions.suggestedParentIds,
-        spouseMode: suggestions.suggestedSpouseId ? "existing" : "none",
-        spouseId: suggestions.suggestedSpouseId,
-      };
-    });
+    const relation = RELATION_OPTIONS.find((option) => option.value === event.target.value);
+    setForm((current) => ({
+      ...current,
+      relation: relation.value,
+      gender: relation.gender,
+      parentLinks: ensureTwoParentRows(suggestedParentLinks(current.anchorId, relation.value)),
+    }));
   };
   const updateAnchor = (event) => {
     const anchorId = event.target.value;
-    const suggestions = relationshipSuggestions(anchorId, form.relation);
     setForm((current) => ({
       ...current,
       anchorId,
-      parentIds: suggestions.suggestedParentIds,
-      spouseMode: suggestions.suggestedSpouseId ? "existing" : "none",
-      spouseId: suggestions.suggestedSpouseId,
+      parentLinks: ensureTwoParentRows(suggestedParentLinks(anchorId, current.relation)),
     }));
   };
-  const anchorPerson =
-    people.find((item) => item.id === form.anchorId) || anchor;
-  const selectedRelation = RELATION_OPTIONS.find(
-    (option) => option.value === form.relation,
-  );
-  const suggestedLinks = relationshipSuggestions(form.anchorId, form.relation);
-  const spouseOptions = people.filter(
-    (item) =>
-      item.id !== form.anchorId && item.ownerId === anchorPerson?.ownerId,
-  );
+  const anchorPerson = people.find((item) => item.id === form.anchorId) || anchor;
+  const selectedRelation = RELATION_OPTIONS.find((option) => option.value === form.relation);
+  const contextOwnerId = person?.ownerId || anchorPerson?.ownerId;
+  const contextPeople = people.filter((item) => !contextOwnerId || item.ownerId === contextOwnerId);
   const submit = async (e) => {
     e.preventDefault();
     if (step === 1) return setStep(2);
@@ -2908,7 +3173,7 @@ function PersonModal({
   return (
     <div className="modal-wrap">
       <button className="modal-scrim" onClick={close} />
-      <form className="add-modal" onSubmit={submit}>
+      <form ref={dialogRef} className="add-modal" role="dialog" aria-modal="true" aria-label="Add or edit family member" tabIndex={-1} onSubmit={submit}>
         <button type="button" className="modal-close" onClick={close}>
           <X />
         </button>
@@ -3067,6 +3332,24 @@ function PersonModal({
                   )}
                   {["spouse", "partner"].includes(selectedRelation?.type) && (
                     <label className="wide">
+                      {selectedRelation.type === "spouse" ? "Divorce / end year" : "Partnership end year"} <small>Optional</small>
+                      <input
+                        inputMode="numeric"
+                        maxLength={4}
+                        value={form.relationshipEndYear}
+                        onChange={(event) =>
+                          setForm((current) => ({
+                            ...current,
+                            relationshipEndYear: event.target.value,
+                            partnershipVariant: event.target.value ? "former" : current.partnershipVariant,
+                          }))
+                        }
+                        placeholder="e.g. 1984"
+                      />
+                    </label>
+                  )}
+                  {["spouse", "partner"].includes(selectedRelation?.type) && (
+                    <label className="wide">
                       Relationship status
                       <select
                         value={form.partnershipVariant}
@@ -3083,142 +3366,25 @@ function PersonModal({
                       </select>
                     </label>
                   )}
-                  {suggestedLinks.suggestedParentIds.length > 0 && (
-                    <fieldset className="suggested-links wide">
-                      <legend>
-                        {selectedRelation?.type === "sibling"
-                          ? "Which parent(s) do they share?"
-                          : "Suggested parent links"}
-                      </legend>
-                      <p>
-                        {selectedRelation?.type === "sibling"
-                          ? "Select one shared parent for a half-sibling or two/more shared parents for a full sibling. Vansh derives sibling type from these parent links."
-                          : `Known partners of ${anchorPerson?.firstName || "this person"} are suggested as additional parents.`}
-                      </p>
-                      {suggestedLinks.suggestedParentIds.map((parentId) => {
-                        const parent = people.find(
-                          (item) => item.id === parentId,
-                        );
-                        return (
-                          <label key={parentId}>
-                            <input
-                              type="checkbox"
-                              checked={form.parentIds.includes(parentId)}
-                              onChange={() =>
-                                setForm((current) => ({
-                                  ...current,
-                                  parentIds: current.parentIds.includes(
-                                    parentId,
-                                  )
-                                    ? current.parentIds.filter(
-                                        (id) => id !== parentId,
-                                      )
-                                    : [...current.parentIds, parentId],
-                                }))
-                              }
-                            />
-                            <span>
-                              <strong>{parent?.name}</strong>
-                              <small>Also link as parent</small>
-                            </span>
-                          </label>
-                        );
-                      })}
-                    </fieldset>
-                  )}
-                  {!["spouse", "partner"].includes(selectedRelation?.type) && (
-                    <fieldset className="relationship-bundle wide">
-                      <legend>
-                        Spouse or partner <small>Optional</small>
-                      </legend>
-                      <select
-                        value={
-                          form.spouseMode === "new"
-                            ? "new"
-                            : form.spouseMode === "existing"
-                              ? form.spouseId
-                              : "none"
-                        }
-                        onChange={(event) => {
-                          const value = event.target.value;
-                          setForm((current) => ({
-                            ...current,
-                            spouseMode:
-                              value === "none"
-                                ? "none"
-                                : value === "new"
-                                  ? "new"
-                                  : "existing",
-                            spouseId: !["none", "new"].includes(value)
-                              ? value
-                              : "",
-                          }));
-                        }}
-                      >
-                        <option value="none">No spouse to link now</option>
-                        {spouseOptions.map((item) => (
-                          <option value={item.id} key={item.id}>
-                            {item.name}
-                            {item.id === suggestedLinks.suggestedSpouseId
-                              ? " (suggested co-parent)"
-                              : ""}
-                          </option>
-                        ))}
-                        <option value="new">Create a name-only spouse…</option>
-                      </select>
-                      {form.spouseMode === "new" && (
-                        <input
-                          required
-                          value={form.newSpouseName}
-                          onChange={(event) =>
-                            setForm((current) => ({
-                              ...current,
-                              newSpouseName: event.target.value,
-                            }))
-                          }
-                          placeholder="Spouse's full name"
-                        />
-                      )}
-                      {form.spouseMode !== "none" && (
-                        <div className="relationship-extras">
-                          <label>
-                            Year married <small>Optional</small>
-                            <input
-                              inputMode="numeric"
-                              value={form.marriageYear}
-                              onChange={(event) =>
-                                setForm((current) => ({
-                                  ...current,
-                                  marriageYear: event.target.value,
-                                }))
-                              }
-                              placeholder="e.g. 1968"
-                            />
-                          </label>
-                          {form.spouseMode === "new" &&
-                            selectedRelation?.type === "parent" &&
-                            selectedRelation?.direction === "to-anchor" && (
-                              <label className="inline-check">
-                                <input
-                                  type="checkbox"
-                                  checked={form.spouseIsParent}
-                                  onChange={(event) =>
-                                    setForm((current) => ({
-                                      ...current,
-                                      spouseIsParent: event.target.checked,
-                                    }))
-                                  }
-                                />
-                                Also link this spouse as a parent of{" "}
-                                {anchorPerson?.firstName}
-                              </label>
-                            )}
-                        </div>
-                      )}
-                    </fieldset>
-                  )}
                 </>
               )}
+              <FamilyConnectionsEditor
+                people={contextPeople}
+                currentPersonId={person?.id || ""}
+                parentLinks={form.parentLinks}
+                setParentLinks={(updater) => setForm((current) => ({
+                  ...current,
+                  parentLinks: typeof updater === "function" ? updater(current.parentLinks) : updater,
+                }))}
+                partnerLinks={form.partnerLinks}
+                setPartnerLinks={(updater) => setForm((current) => ({
+                  ...current,
+                  partnerLinks: typeof updater === "function" ? updater(current.partnerLinks) : updater,
+                }))}
+                anchorName={anchorPerson?.firstName || ""}
+                allowAnchorCoParent={!person && selectedRelation?.type === "parent" && selectedRelation?.direction === "to-anchor"}
+                disabled={Boolean(person?.canSuggest)}
+              />
             </div>
             {!person && (
               <div className="kinship-tip">
@@ -3231,8 +3397,7 @@ function PersonModal({
                       : ""}
                   </strong>
                   For Chacha or Taya, add a Brother from your father’s node. For
-                  Dadi, add a Mother from your father’s node. For Chachi, add a
-                  Wife from your uncle’s node.
+                  Dadi, add a Mother from your father’s node. You can add more than one parent of the same gender when the family structure requires it (for example biological, adoptive or step parents). For Chachi, add a Wife from your uncle’s node.
                 </span>
               </div>
             )}
@@ -3259,15 +3424,25 @@ function PersonModal({
                 placeholder="e.g. 1942"
               />
             </label>
+            <label className="inline-check">
+              <input
+                type="checkbox"
+                checked={form.birthApproximate}
+                onChange={(event) => setForm((current) => ({ ...current, birthApproximate: event.target.checked }))}
+              />
+              Birth date/year is approximate (circa)
+            </label>
             <label>
-              Family branch
-              <select name="side" value={form.side} onChange={update}>
-                <option>You</option>
-                <option>Mother's side</option>
-                <option>Father's side</option>
-                <option>Partner's side</option>
-                <option>Other</option>
-              </select>
+              Date of death <small>If applicable</small>
+              <input type="date" name="deathDate" value={form.deathDate} onChange={update} max={new Date().toISOString().slice(0, 10)} />
+            </label>
+            <label>
+              Death year <small>{form.deathDate ? "Derived from exact date" : "Optional"}</small>
+              <input name="deathYear" value={form.deathDate ? form.deathDate.slice(0, 4) : form.deathYear} onChange={update} disabled={Boolean(form.deathDate)} placeholder="e.g. 2018" />
+            </label>
+            <label className="inline-check">
+              <input type="checkbox" checked={form.deathApproximate} onChange={(event) => setForm((current) => ({ ...current, deathApproximate: event.target.checked }))} />
+              Death date/year is approximate
             </label>
             <label className="wide">
               Place of birth <small>Optional</small>
@@ -3277,6 +3452,13 @@ function PersonModal({
                 onChange={(birthLocation) =>
                   setForm((current) => ({ ...current, birthLocation }))
                 }
+              />
+            </label>
+            <label className="wide">
+              Place of death <small>Optional</small>
+              <LocationPicker
+                value={form.deathLocation}
+                onChange={(deathLocation) => setForm((current) => ({ ...current, deathLocation }))}
               />
             </label>
             <label className="wide">
@@ -3290,6 +3472,28 @@ function PersonModal({
                   setForm((current) => ({ ...current, livedLocations }))
                 }
               />
+            </label>
+            <label>
+              Confidence
+              <select name="factConfidence" value={form.factConfidence} onChange={update}>
+                <option value="reported">Reported by family</option>
+                <option value="probable">Probable</option>
+                <option value="uncertain">Uncertain</option>
+                <option value="documented">Documented / sourced</option>
+                <option value="disputed">Disputed</option>
+              </select>
+            </label>
+            <label>
+              Living-person privacy
+              <select name="privacyLevel" value={form.privacyLevel} onChange={update}>
+                <option value="private">Private</option>
+                <option value="family">Shared family only</option>
+                <option value="match_clues">Allow limited match clues</option>
+              </select>
+            </label>
+            <label className="wide">
+              Source / provenance note <small>Optional</small>
+              <textarea name="provenanceNote" rows="3" value={form.provenanceNote} onChange={update} placeholder="e.g. According to Sonia; family register; uncertain spelling" />
             </label>
           </div>
         )}
@@ -3370,22 +3574,32 @@ function PersonModal({
 }
 
 function FamilyApp({ session }) {
-  const [page, setPage] = useState("home");
+  const [route, navigate] = useUrlPage();
+  const page = route.page;
+  const setPage = (nextPage) => navigate(nextPage);
   const [people, setPeople] = useState([]);
   const [relationships, setRelationships] = useState([]);
   const [matches, setMatches] = useState([]);
   const [identityCandidates, setIdentityCandidates] = useState([]);
+  const [identityPromptCandidate, setIdentityPromptCandidate] = useState(null);
   const [inbox, setInbox] = useState([]);
+  const [familyUpdates, setFamilyUpdates] = useState([]);
+  const [invitationActivity, setInvitationActivity] = useState([]);
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(true);
   const [dataError, setDataError] = useState("");
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState(null);
+  const [placeEditing, setPlaceEditing] = useState(null);
   const [inviting, setInviting] = useState(null);
   const [placeholdersFor, setPlaceholdersFor] = useState(null);
   const [linkingPeople, setLinkingPeople] = useState(false);
   const [mergingPeople, setMergingPeople] = useState(false);
   const [showNotes, setShowNotes] = useState(false);
+  const [showProfile, setShowProfile] = useState(false);
+  const [showVoice, setShowVoice] = useState(false);
+  const [voiceDraft, setVoiceDraft] = useState(null);
+  const [familyViewHint, setFamilyViewHint] = useState("people");
   const [menu, setMenu] = useState(false);
   const [query, setQuery] = useState("");
 
@@ -3439,6 +3653,7 @@ function FamilyApp({ session }) {
               profileResult.data.current_location_text ||
               profileResult.data.location ||
               null,
+            maiden_name: profileResult.data.birth_surname || null,
             family_side: "You",
             is_self: true,
           })
@@ -3453,27 +3668,18 @@ function FamilyApp({ session }) {
         }
         rows = [selfResult.data];
       }
-      const [matchResult, identityResult, inboxResult] = await Promise.all([
+      const [matchResult, identityResult, inboxResult, invitationResult, familyUpdateResult] = await Promise.all([
         supabase.rpc("find_family_matches"),
         supabase.rpc("find_identity_claim_candidates"),
         supabase.rpc("get_verification_inbox"),
+        supabase.rpc("get_my_invitation_activity"),
+        supabase.rpc("get_family_update_notifications"),
       ]);
       if (!active) return;
       setProfile(profileResult.data);
-      setPeople(
-        rows.map((row, index) => personFromRow(row, index, session.user.id)),
-      );
-      setRelationships(
-        relationshipsResult.data.map((row) => ({
-          id: row.id,
-          from: row.person_a_id,
-          to: row.person_b_id,
-          type: row.relationship_type,
-          variant: row.relationship_variant || "unspecified",
-          startYear: row.start_year,
-          endYear: row.end_year,
-        })),
-      );
+      const familyState = familyStateFromRows(rows, relationshipsResult.data, session.user.id);
+      setPeople(familyState.people);
+      setRelationships(familyState.relationships);
       setMatches(
         (matchResult.data || []).map((row, index) => ({
           id: row.candidate_member_id,
@@ -3523,6 +3729,8 @@ function FamilyApp({ session }) {
         })),
       );
       setInbox(inboxResult.data || []);
+      setInvitationActivity(invitationResult.data || []);
+      if (!familyUpdateResult.error) setFamilyUpdates(familyUpdateResult.data || []);
       setLoading(false);
     };
     loadFamily();
@@ -3531,11 +3739,34 @@ function FamilyApp({ session }) {
     };
   }, [session.user.id, session.user.user_metadata.family_surname]);
 
+  useEffect(() => {
+    const candidate = identityCandidates[0];
+    if (!candidate) {
+      setIdentityPromptCandidate(null);
+      return;
+    }
+    const key = `vansh-identity-prompt:${session.user.id}:${candidate.id}`;
+    if (window.sessionStorage.getItem(key) === "dismissed") return;
+    setIdentityPromptCandidate((current) => current || candidate);
+  }, [identityCandidates, session.user.id]);
+
+  const closeIdentityPrompt = () => {
+    if (identityPromptCandidate) {
+      window.sessionStorage.setItem(
+        `vansh-identity-prompt:${session.user.id}:${identityPromptCandidate.id}`,
+        "dismissed",
+      );
+    }
+    setIdentityPromptCandidate(null);
+  };
+
   const refreshTrustData = async () => {
-    const [matchResult, identityResult, inboxResult] = await Promise.all([
+    const [matchResult, identityResult, inboxResult, invitationResult, familyUpdateResult] = await Promise.all([
       supabase.rpc("find_family_matches"),
       supabase.rpc("find_identity_claim_candidates"),
       supabase.rpc("get_verification_inbox"),
+      supabase.rpc("get_my_invitation_activity"),
+      supabase.rpc("get_family_update_notifications"),
     ]);
     if (!matchResult.error)
       setMatches(
@@ -3588,6 +3819,8 @@ function FamilyApp({ session }) {
         })),
       );
     if (!inboxResult.error) setInbox(inboxResult.data || []);
+    if (!invitationResult.error) setInvitationActivity(invitationResult.data || []);
+    if (!familyUpdateResult.error) setFamilyUpdates(familyUpdateResult.data || []);
   };
 
   const refreshFamilyData = async () => {
@@ -3597,24 +3830,43 @@ function FamilyApp({ session }) {
     ]);
     if (peopleResult.error) throw peopleResult.error;
     if (relationshipsResult.error) throw relationshipsResult.error;
-    setPeople(
-      peopleResult.data.map((row, index) =>
-        personFromRow(row, index, session.user.id),
-      ),
-    );
-    setRelationships(
-      relationshipsResult.data.map((row) => ({
-        id: row.id,
-        from: row.person_a_id,
-        to: row.person_b_id,
-        type: row.relationship_type,
-        variant: row.relationship_variant || "unspecified",
-        startYear: row.start_year,
-        endYear: row.end_year,
-      })),
-    );
+    const familyState = familyStateFromRows(peopleResult.data, relationshipsResult.data, session.user.id);
+    setPeople(familyState.people);
+    setRelationships(familyState.relationships);
     await refreshTrustData();
   };
+
+  const refreshFamilyDataRef = useRef(null);
+  refreshFamilyDataRef.current = refreshFamilyData;
+  useEffect(() => {
+    let timer = null;
+    const scheduleRefresh = () => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        refreshFamilyDataRef.current?.().catch((error) => {
+          void supabase.from("application_errors").insert({
+            user_id: session.user.id,
+            message: error.message || "Realtime refresh failed",
+            context: { source: "realtime" },
+          });
+        });
+      }, 180);
+    };
+    const channel = supabase
+      .channel(`vansh-live-${session.user.id}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "family_members" }, scheduleRefresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "relationships" }, scheduleRefresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "identity_claim_requests" }, scheduleRefresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "profile_change_requests" }, scheduleRefresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "family_invitations" }, scheduleRefresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "family_connection_requests" }, scheduleRefresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "family_update_notifications" }, scheduleRefresh)
+      .subscribe();
+    return () => {
+      window.clearTimeout(timer);
+      supabase.removeChannel(channel);
+    };
+  }, [session.user.id]);
 
   const savePerson = async (form, existing, options = {}) => {
     const self = people.find((person) => person.isSelf);
@@ -3631,61 +3883,10 @@ function FamilyApp({ session }) {
         "Choose an existing family member to connect this person to.",
       );
 
-    const today = new Date();
-    const currentYear = today.getFullYear();
-    if (form.birthDate) {
-      const parsedBirthDate = new Date(`${form.birthDate}T00:00:00`);
-      if (
-        Number.isNaN(parsedBirthDate.getTime()) ||
-        parsedBirthDate.getFullYear() < 1800 ||
-        parsedBirthDate > today
-      )
-        throw new Error("Enter a valid date of birth.");
-    }
-    const effectiveBirthYear = form.birthDate
-      ? Number(form.birthDate.slice(0, 4))
-      : form.birthYear
-        ? Number(form.birthYear)
-        : null;
-    if (
-      effectiveBirthYear &&
-      (!/^\d{4}$/.test(String(effectiveBirthYear)) ||
-        effectiveBirthYear < 1800 ||
-        effectiveBirthYear > currentYear)
-    )
-      throw new Error("Enter a valid four-digit birth year.");
-
-    if (
-      form.marriageYear &&
-      (!/^\d{4}$/.test(form.marriageYear) ||
-        Number(form.marriageYear) < 1800 ||
-        Number(form.marriageYear) > currentYear)
-    )
-      throw new Error("Enter a valid four-digit marriage year.");
-
-    const livedLocations = form.livedLocations.map((location) => {
-      const startYear = location.startYear ? Number(location.startYear) : null;
-      const endYear = location.endYear ? Number(location.endYear) : null;
-      for (const [label, value] of [
-        ["From", location.startYear],
-        ["To", location.endYear],
-      ]) {
-        if (
-          value &&
-          (!/^\d{4}$/.test(String(value)) ||
-            Number(value) < 1800 ||
-            Number(value) > currentYear)
-        )
-          throw new Error(
-            `${label} year for ${location.display} must be a valid four-digit year.`,
-          );
-      }
-      if (startYear && endYear && startYear > endYear)
-        throw new Error(
-          `The From year for ${location.display} cannot be after its To year.`,
-        );
-      return { ...location, startYear, endYear };
-    });
+    const validated = validatePersonForm(form);
+    const effectiveBirthYear = validated.birthYear;
+    const livedLocations = validated.livedLocations;
+    const effectiveDeathYear = validated.deathYear;
 
     const payload = {
       owner_id:
@@ -3693,19 +3894,27 @@ function FamilyApp({ session }) {
         anchorPerson?.ownerId ||
         self.ownerId ||
         session.user.id,
-      first_name: form.firstName.trim(),
-      surname: form.surname.trim(),
+      first_name: validated.firstName,
+      surname: validated.surname,
       nickname: form.nickname.trim() || null,
       maiden_name: form.maidenName.trim() || null,
       gender: form.gender,
       birth_date: form.birthDate || null,
       birth_year: effectiveBirthYear,
+      birth_approximate: Boolean(form.birthApproximate),
       birth_location: form.birthLocation,
+      death_date: form.deathDate || null,
+      death_year: effectiveDeathYear,
+      death_approximate: Boolean(form.deathApproximate),
+      death_location: form.deathLocation,
+      death_place: form.deathLocation?.display || null,
       lived_locations: livedLocations,
       birth_place:
         form.birthLocation?.display || existing?.legacyBirthPlace || null,
       lived_in: livedLocations[0]?.display || existing?.legacyLivedIn || null,
-      family_side: form.side,
+      fact_confidence: form.factConfidence || "reported",
+      provenance_note: form.provenanceNote?.trim() || null,
+      privacy_level: form.privacyLevel || "family",
     };
 
     if (!payload.first_name || !payload.surname)
@@ -3722,8 +3931,17 @@ function FamilyApp({ session }) {
         gender: payload.gender,
         birth_date: payload.birth_date,
         birth_year: payload.birth_year,
+        birth_approximate: payload.birth_approximate,
         birth_location: payload.birth_location,
+        death_date: payload.death_date,
+        death_year: payload.death_year,
+        death_approximate: payload.death_approximate,
+        death_location: payload.death_location,
+        death_place: payload.death_place,
         lived_locations: payload.lived_locations,
+        fact_confidence: payload.fact_confidence,
+        provenance_note: payload.provenance_note,
+        privacy_level: payload.privacy_level,
         birth_place: payload.birth_place,
         lived_in: payload.lived_in,
       };
@@ -3735,8 +3953,17 @@ function FamilyApp({ session }) {
         gender: existing.gender,
         birth_date: existing.birthDate || null,
         birth_year: existing.birthYear ? Number(existing.birthYear) : null,
+        birth_approximate: existing.birthApproximate,
         birth_location: existing.birthLocation,
+        death_date: existing.deathDate || null,
+        death_year: existing.deathYear ? Number(existing.deathYear) : null,
+        death_approximate: existing.deathApproximate,
+        death_location: existing.deathLocation,
+        death_place: existing.deathPlace || null,
         lived_locations: existing.livedLocations,
+        fact_confidence: existing.factConfidence,
+        provenance_note: existing.provenanceNote || null,
+        privacy_level: existing.privacyLevel,
         birth_place: existing.birthPlace || null,
         lived_in: existing.livedLocations?.[0]?.display || existing.legacyLivedIn || null,
       };
@@ -3752,6 +3979,10 @@ function FamilyApp({ session }) {
         p_changes: changes,
       });
       if (suggestion.error) throw suggestion.error;
+      if (suggestion.data)
+        void supabase.functions.invoke("send-request-notification", {
+          body: { kind: "correction", requestId: suggestion.data },
+        });
       await refreshTrustData();
       return { suggested: true };
     }
@@ -3791,87 +4022,215 @@ function FamilyApp({ session }) {
       : null;
     if (!existing && !relation) throw new Error("Choose a relationship.");
 
-    const createRelationshipBundle = async (memberId) => {
-      let spouseMember = null;
-      if (form.spouseMode === "new") {
-        const nameParts = form.newSpouseName
-          .trim()
-          .split(/\s+/)
-          .filter(Boolean);
-        if (!nameParts.length) throw new Error("Enter the spouse's name.");
-        const spouseResult = await supabase
-          .from("family_members")
-          .insert({
-            owner_id: anchorPerson.ownerId,
-            created_by: session.user.id,
-            first_name:
-              nameParts.length > 1
-                ? nameParts.slice(0, -1).join(" ")
-                : nameParts[0],
-            surname:
-              nameParts.length > 1 ? nameParts.at(-1) : payload.surname,
-            family_side: form.side,
-            gender: "unspecified",
-          })
-          .select()
-          .single();
-        if (spouseResult.error) throw spouseResult.error;
-        spouseMember = spouseResult.data;
+    const relationshipYear = (value, label) => {
+      if (value === "" || value === null || value === undefined) return null;
+      const year = Number(value);
+      if (!Number.isInteger(year) || year < 1800 || year > 2100)
+        throw new Error(`${label} must be a year between 1800 and 2100.`);
+      return year;
+    };
+
+    const createPlaceholderPerson = async (link, ownerId, fallbackLabel) => {
+      const placeholderLabel = link.placeholderLabel?.trim() || fallbackLabel;
+      const placeholderResult = await supabase
+        .from("family_members")
+        .insert({
+          owner_id: ownerId,
+          created_by: session.user.id,
+          first_name: "Unknown",
+          surname: payload.surname || anchorPerson?.surname || "Unknown",
+          gender: link.placeholderGender || "unspecified",
+          is_placeholder: true,
+          placeholder_label: placeholderLabel,
+        })
+        .select()
+        .single();
+      if (placeholderResult.error) throw placeholderResult.error;
+      return placeholderResult.data.id;
+    };
+
+    const resolveContextPersonId = async (link, ownerId, fallbackLabel) => {
+      if (link.mode === "placeholder")
+        return createPlaceholderPerson(link, ownerId, fallbackLabel);
+      return link.personId || "";
+    };
+
+    const syncFamilyConnections = async (memberId, ownerId, replaceExisting = false) => {
+      const currentResult = await supabase
+        .from("relationships")
+        .select("id, owner_id, created_by, person_a_id, person_b_id, relationship_type, relationship_variant, start_year, end_year")
+        .or(`person_a_id.eq.${memberId},person_b_id.eq.${memberId}`);
+      if (currentResult.error) throw currentResult.error;
+      const currentRows = currentResult.data || [];
+
+      const desiredParents = [];
+      const seenParentIds = new Set();
+      for (const link of form.parentLinks || []) {
+        if (link.mode !== "placeholder" && !link.personId) continue;
+        const parentId = await resolveContextPersonId(link, ownerId, `Unknown parent of ${payload.first_name}`);
+        if (!parentId || parentId === memberId || seenParentIds.has(parentId)) continue;
+        seenParentIds.add(parentId);
+        desiredParents.push({ parentId, variant: link.variant || "biological" });
       }
 
+      const desiredPartners = [];
+      const seenPartnerIds = new Set();
+      for (const link of form.partnerLinks || []) {
+        if (link.mode !== "placeholder" && !link.personId) continue;
+        const partnerId = await resolveContextPersonId(link, ownerId, `Unknown ${link.type === "partner" ? "partner" : "spouse"} of ${payload.first_name}`);
+        if (!partnerId || partnerId === memberId || seenPartnerIds.has(`${link.type}:${partnerId}`)) continue;
+        const startYear = relationshipYear(link.startYear, link.type === "spouse" ? "Marriage year" : "Partnership start year");
+        const endYear = relationshipYear(link.endYear, link.type === "spouse" ? "Divorce / end year" : "Partnership end year");
+        if (startYear && endYear && endYear < startYear)
+          throw new Error("A relationship end year cannot be before its start year.");
+        seenPartnerIds.add(`${link.type}:${partnerId}`);
+        desiredPartners.push({
+          partnerId,
+          type: link.type === "partner" ? "partner" : "spouse",
+          variant: endYear ? "former" : (link.variant || "current"),
+          startYear,
+          endYear,
+          alsoParentOfAnchor: Boolean(link.alsoParentOfAnchor),
+        });
+      }
+
+      const currentParents = currentRows.filter(
+        (row) => row.relationship_type === "parent" && row.person_b_id === memberId,
+      );
+      const currentPartners = currentRows.filter(
+        (row) => ["spouse", "partner"].includes(row.relationship_type),
+      );
+
+      if (replaceExisting) {
+        for (const row of currentParents) {
+          if (!desiredParents.some((item) => item.parentId === row.person_a_id)) {
+            const remove = await supabase.from("relationships").delete().eq("id", row.id);
+            if (remove.error) throw remove.error;
+          }
+        }
+        for (const row of currentPartners) {
+          const otherId = row.person_a_id === memberId ? row.person_b_id : row.person_a_id;
+          if (!desiredPartners.some((item) => item.partnerId === otherId && item.type === row.relationship_type)) {
+            const remove = await supabase.from("relationships").delete().eq("id", row.id);
+            if (remove.error) throw remove.error;
+          }
+        }
+      }
+
+      for (const item of desiredParents) {
+        const current = currentParents.find((row) => row.person_a_id === item.parentId);
+        if (current) {
+          if ((current.relationship_variant || "unspecified") !== item.variant) {
+            const updateResult = await supabase
+              .from("relationships")
+              .update({ relationship_variant: item.variant })
+              .eq("id", current.id);
+            if (updateResult.error) throw updateResult.error;
+          }
+        } else {
+          const insertResult = await supabase.from("relationships").insert({
+            owner_id: ownerId,
+            created_by: session.user.id,
+            person_a_id: item.parentId,
+            person_b_id: memberId,
+            relationship_type: "parent",
+            relationship_variant: item.variant,
+            start_year: null,
+            end_year: null,
+          });
+          if (insertResult.error) throw insertResult.error;
+        }
+      }
+
+      for (const item of desiredPartners) {
+        const current = currentPartners.find((row) => {
+          const otherId = row.person_a_id === memberId ? row.person_b_id : row.person_a_id;
+          return otherId === item.partnerId && row.relationship_type === item.type;
+        });
+        if (current) {
+          const updateResult = await supabase
+            .from("relationships")
+            .update({
+              relationship_variant: item.variant,
+              start_year: item.startYear,
+              end_year: item.endYear,
+            })
+            .eq("id", current.id);
+          if (updateResult.error) throw updateResult.error;
+        } else {
+          const insertResult = await supabase.from("relationships").insert({
+            owner_id: ownerId,
+            created_by: session.user.id,
+            person_a_id: memberId,
+            person_b_id: item.partnerId,
+            relationship_type: item.type,
+            relationship_variant: item.variant,
+            start_year: item.startYear,
+            end_year: item.endYear,
+          });
+          if (insertResult.error) throw insertResult.error;
+        }
+        if (
+          item.alsoParentOfAnchor &&
+          anchorPerson?.id &&
+          anchorPerson.id !== memberId &&
+          item.partnerId !== anchorPerson.id
+        ) {
+          const existingCoParent = relationships.some(
+            (row) => row.type === "parent" && row.from === item.partnerId && row.to === anchorPerson.id,
+          );
+          if (!existingCoParent) {
+            const coParentResult = await supabase.from("relationships").insert({
+              owner_id: ownerId,
+              created_by: session.user.id,
+              person_a_id: item.partnerId,
+              person_b_id: anchorPerson.id,
+              relationship_type: "parent",
+              relationship_variant: "biological",
+            });
+            if (coParentResult.error) throw coParentResult.error;
+          }
+        }
+      }
+    };
+
+    const createRelationshipBundle = async (memberId) => {
+      const selectedParentCount = (form.parentLinks || []).filter(
+        (link) => link.mode === "placeholder" || link.personId,
+      ).length;
       const rows = [];
-      const pushRelationship = (row) => {
-        const symmetric = ["sibling", "spouse", "partner"].includes(
-          row.relationship_type,
-        );
-        const alreadyExists = relationships.some(
-          (item) =>
-            item.type === row.relationship_type &&
-            ((item.from === row.person_a_id && item.to === row.person_b_id) ||
-              (symmetric &&
-                item.from === row.person_b_id &&
-                item.to === row.person_a_id)),
-        );
-        const alreadyQueued = rows.some(
-          (item) =>
-            item.relationship_type === row.relationship_type &&
-            ((item.person_a_id === row.person_a_id &&
-              item.person_b_id === row.person_b_id) ||
-              (symmetric &&
-                item.person_a_id === row.person_b_id &&
-                item.person_b_id === row.person_a_id)),
-        );
-        if (!alreadyExists && !alreadyQueued) rows.push(row);
-      };
-
-      const base = {
-        owner_id: anchorPerson.ownerId,
-        created_by: session.user.id,
-      };
-
       if (relation.type === "sibling") {
         const knownParents = parentIdsFor(anchorPerson.id, relationships);
-        if (knownParents.length && !form.parentIds.length)
+        if (knownParents.length && !selectedParentCount)
           throw new Error(
             "Choose at least one shared parent. One shared parent creates a half-sibling relationship; two or more creates a full-sibling relationship.",
           );
-        if (!form.parentIds.length) {
-          pushRelationship({
-            ...base,
+        if (!selectedParentCount) {
+          rows.push({
+            owner_id: anchorPerson.ownerId,
+            created_by: session.user.id,
             person_a_id: memberId,
             person_b_id: anchorPerson.id,
             relationship_type: "sibling",
             relationship_variant: "reported",
             start_year: null,
+            end_year: null,
           });
         }
       } else {
-        const personAId =
-          relation.direction === "from-anchor" ? anchorPerson.id : memberId;
-        const personBId =
-          relation.direction === "from-anchor" ? memberId : anchorPerson.id;
-        pushRelationship({
-          ...base,
+        const personAId = relation.direction === "from-anchor" ? anchorPerson.id : memberId;
+        const personBId = relation.direction === "from-anchor" ? memberId : anchorPerson.id;
+        const startYear = ["spouse", "partner"].includes(relation.type)
+          ? relationshipYear(form.marriageYear, relation.type === "spouse" ? "Marriage year" : "Partnership start year")
+          : null;
+        const endYear = ["spouse", "partner"].includes(relation.type)
+          ? relationshipYear(form.relationshipEndYear, relation.type === "spouse" ? "Divorce / end year" : "Partnership end year")
+          : null;
+        if (startYear && endYear && endYear < startYear)
+          throw new Error("A relationship end year cannot be before its start year.");
+        rows.push({
+          owner_id: anchorPerson.ownerId,
+          created_by: session.user.id,
           person_a_id: personAId,
           person_b_id: personBId,
           relationship_type: relation.type,
@@ -3879,68 +4238,17 @@ function FamilyApp({ session }) {
             relation.type === "parent"
               ? form.parentVariant || "biological"
               : ["spouse", "partner"].includes(relation.type)
-                ? form.partnershipVariant || "current"
+                ? endYear ? "former" : (form.partnershipVariant || "current")
                 : "unspecified",
-          start_year:
-            ["spouse", "partner"].includes(relation.type) && form.marriageYear
-              ? Number(form.marriageYear)
-              : null,
+          start_year: startYear,
+          end_year: endYear,
         });
       }
-
-      form.parentIds.forEach((parentId) => {
-        const anchorParent = relationships.find(
-          (item) =>
-            item.type === "parent" &&
-            item.from === parentId &&
-            item.to === anchorPerson.id,
-        );
-        pushRelationship({
-          ...base,
-          person_a_id: parentId,
-          person_b_id: memberId,
-          relationship_type: "parent",
-          relationship_variant: anchorParent?.variant || "biological",
-          start_year: null,
-        });
-      });
-
-      const spouseId =
-        form.spouseMode === "existing" ? form.spouseId : spouseMember?.id;
-      if (spouseId) {
-        pushRelationship({
-          ...base,
-          person_a_id: memberId,
-          person_b_id: spouseId,
-          relationship_type: "spouse",
-          relationship_variant: form.partnershipVariant || "current",
-          start_year: form.marriageYear ? Number(form.marriageYear) : null,
-        });
-        if (
-          spouseMember &&
-          form.spouseIsParent &&
-          relation.type === "parent" &&
-          relation.direction === "to-anchor"
-        ) {
-          pushRelationship({
-            ...base,
-            person_a_id: spouseMember.id,
-            person_b_id: anchorPerson.id,
-            relationship_type: "parent",
-            relationship_variant: form.parentVariant || "biological",
-            start_year: null,
-          });
-        }
-      }
-
       if (rows.length) {
-        const relationshipResult = await supabase
-          .from("relationships")
-          .insert(rows)
-          .select();
+        const relationshipResult = await supabase.from("relationships").insert(rows).select();
         if (relationshipResult.error) throw relationshipResult.error;
       }
-      return spouseMember;
+      await syncFamilyConnections(memberId, anchorPerson.ownerId, false);
     };
 
     if (existing) {
@@ -3949,13 +4257,15 @@ function FamilyApp({ session }) {
         payload.placeholder_label = null;
         payload.filled_by = session.user.id;
       }
-      const memberResult = await supabase
-        .from("family_members")
-        .update(payload)
-        .eq("id", existing.id)
-        .select()
-        .single();
+      const memberResult = await supabase.rpc("update_family_member_with_revision", {
+        p_member_id: existing.id,
+        p_expected_revision: existing.revision || 1,
+        p_changes: Object.fromEntries(
+          Object.entries(payload).filter(([key]) => key !== "owner_id"),
+        ),
+      });
       if (memberResult.error) throw memberResult.error;
+      await syncFamilyConnections(existing.id, existing.ownerId, true);
       await refreshFamilyData();
       return { updated: true };
     }
@@ -4001,6 +4311,10 @@ function FamilyApp({ session }) {
             p_candidate_member_id: match.id,
           });
     if (result.error) throw result.error;
+    if (status === "requested" && result.data)
+      void supabase.functions.invoke("send-request-notification", {
+        body: { kind: "family", requestId: result.data },
+      });
     await refreshTrustData();
   };
 
@@ -4009,6 +4323,10 @@ function FamilyApp({ session }) {
       p_candidate_member_id: candidate.id,
     });
     if (result.error) throw result.error;
+    if (result.data)
+      void supabase.functions.invoke("send-request-notification", {
+        body: { kind: "identity", requestId: result.data },
+      });
     await refreshTrustData();
   };
 
@@ -4027,11 +4345,16 @@ function FamilyApp({ session }) {
             p_invitation_id: item.request_id,
             p_accept: accept,
           })
-        : await supabase.rpc("respond_verification_request", {
-            p_kind: item.kind,
-            p_request_id: item.request_id,
-            p_accept: accept,
-          });
+        : item.kind === "correction"
+          ? await supabase.rpc("respond_profile_correction", {
+              p_request_id: item.request_id,
+              p_accept: accept,
+            })
+          : await supabase.rpc("respond_verification_request", {
+              p_kind: item.kind,
+              p_request_id: item.request_id,
+              p_accept: accept,
+            });
     if (result.error) throw result.error;
     await refreshFamilyData();
   };
@@ -4045,6 +4368,95 @@ function FamilyApp({ session }) {
     if (result.error) throw result.error;
     await refreshFamilyData();
   };
+  const saveProfile = async (form) => {
+    const payload = {
+      display_name: `${form.firstName.trim()} ${form.surname.trim()}`.trim(),
+      first_name: form.firstName.trim(),
+      surname: form.surname.trim(),
+      birth_surname: form.birthSurname?.trim() || null,
+      birth_date: form.birthDate || null,
+      birth_location: form.birthLocation || null,
+      current_location: form.currentLocation || null,
+      birth_location_text: form.birthLocation?.display || null,
+      current_location_text: form.currentLocation?.display || null,
+      location: form.currentLocation?.display || null,
+      discovery_enabled: Boolean(form.discoveryEnabled),
+      living_person_privacy: form.livingPrivacy,
+      updated_at: new Date().toISOString(),
+    };
+    if (!payload.first_name || !payload.surname) throw new Error("First name and surname are required.");
+    const result = await supabase.from("profiles").update(payload).eq("id", session.user.id).select().single();
+    if (result.error) throw result.error;
+    setProfile(result.data);
+    const self = people.find((person) => person.isSelf || person.linkedUserId === session.user.id);
+    if (self?.canEdit) {
+      const changes = {
+        first_name: payload.first_name,
+        surname: payload.surname,
+        maiden_name: payload.birth_surname,
+        birth_date: payload.birth_date,
+        birth_year: payload.birth_date ? Number(payload.birth_date.slice(0, 4)) : (self.birthYear ? Number(self.birthYear) : null),
+        birth_location: payload.birth_location,
+        birth_place: payload.birth_location_text,
+      };
+      const selfUpdate = await supabase.rpc("update_family_member_with_revision", {
+        p_member_id: self.id,
+        p_expected_revision: self.revision || 1,
+        p_changes: changes,
+      });
+      if (!selfUpdate.error) await refreshFamilyData();
+    }
+  };
+
+  const previewDeleteAccount = async () => {
+    const { data, error } = await supabase.rpc("preview_account_deletion");
+    if (error) throw error;
+    return data || {};
+  };
+
+  const deleteAccount = async () => {
+    const { data, error } = await supabase.functions.invoke("delete-account", { body: {} });
+    if (error || data?.error) throw new Error(data?.error || error?.message || "Could not delete the account.");
+    await supabase.auth.signOut();
+  };
+
+  const markFamilyUpdatesRead = async () => {
+    const result = await supabase.rpc("mark_family_update_notifications_read");
+    if (result.error) throw result.error;
+    setFamilyUpdates((current) => current.map((item) => ({ ...item, read_at: item.read_at || new Date().toISOString() })));
+  };
+
+  const revokeInvite = async (invitation) => {
+    const result = await supabase.rpc("revoke_family_invitation", { p_invitation_id: invitation.invitation_id });
+    if (result.error) throw result.error;
+    await refreshTrustData();
+  };
+
+  const resendInvite = async (invitation) => {
+    const { data, error } = await supabase.functions.invoke("send-family-invite", {
+      body: { resendInvitationId: invitation.invitation_id },
+    });
+    if (error || data?.error) throw new Error(data?.error || error?.message || "Could not resend the invitation.");
+    await refreshTrustData();
+  };
+
+  const acceptVoiceProposal = (proposal) => {
+    const self = people.find((person) => person.isSelf) || people[0];
+    let anchor = self;
+    if (["father", "mother"].includes(proposal.anchorHint)) {
+      const parentIds = parentIdsFor(self?.id, relationships);
+      anchor = people.find((person) => parentIds.includes(person.id) && person.gender === (proposal.anchorHint === "father" ? "male" : "female")) ||
+        people.find((person) => parentIds.includes(person.id)) || self;
+    }
+    setVoiceDraft({
+      ...proposal,
+      anchorId: anchor?.id,
+      surname: proposal.surname || anchor?.surname || self?.surname || "",
+    });
+    setAdding(anchor);
+    setShowVoice(false);
+  };
+
   const addPlaceholders = async (anchor, totalCount) => {
     const siblingIds = new Set(
       siblingDetailsFor(anchor.id, relationships).map((sibling) => sibling.id),
@@ -4059,7 +4471,6 @@ function FamilyApp({ session }) {
       created_by: session.user.id,
       first_name: "Unknown",
       surname: anchor.surname || "Unknown",
-      family_side: anchor.side,
       gender: "unspecified",
       is_placeholder: true,
       placeholder_label: `Unknown sibling ${existingPlaceholderCount + index + 1}`,
@@ -4263,13 +4674,10 @@ function FamilyApp({ session }) {
       ),
     );
   };
-  const filtered = query
-    ? people.filter((person) =>
-        `${person.name} ${person.maidenName} ${person.birthPlace} ${person.livedIn}`
-          .toLowerCase()
-          .includes(query.toLowerCase()),
-      )
-    : null;
+  const selfPerson = people.find((person) => person.isSelf) || people[0] || null;
+  const branchFor = (person) => deriveBranchLabel(person.id, selfPerson?.id, people, relationships);
+  const selectedPerson = route.personId ? people.find((person) => person.id === route.personId) : null;
+  const hasQuery = query.trim().length > 0;
   if (loading)
     return (
       <div className="loading-screen">
@@ -4279,7 +4687,7 @@ function FamilyApp({ session }) {
     );
   const notificationCount = inbox.filter(
     (item) => item.direction === "incoming" && item.status === "pending",
-  ).length;
+  ).length + familyUpdates.filter((item) => !item.read_at).length;
 
   if (dataError)
     return (
@@ -4313,68 +4721,96 @@ function FamilyApp({ session }) {
           signOut={() => supabase.auth.signOut()}
           notificationCount={notificationCount}
           onNotifications={() => setPage("matches")}
+          onProfile={() => setShowProfile(true)}
         />
-        {filtered ? (
-          <div className="page search-results">
-            <span className="eyebrow">SEARCH RESULTS</span>
-            <h1>People matching “{query}”</h1>
-            {filtered.length ? (
-              <div className="people-grid">
-                {filtered.map((person) => (
-                  <article className="person-card" key={person.id}>
-                    <Avatar person={person} />
-                    <h3>{person.name}</h3>
-                    <p>{person.birthPlace || "Place not recorded"}</p>
-                  </article>
-                ))}
-              </div>
-            ) : (
-              <div className="empty">
-                <Search />
-                <h3>No people found</h3>
-                <p>Try a surname, city or family member's name.</p>
-              </div>
-            )}
-          </div>
+        {hasQuery ? (
+          <SearchResults
+            query={query}
+            people={people}
+            relationships={relationships}
+            branchFor={branchFor}
+            openPerson={(person) => { setQuery(""); navigate("person", person.id); }}
+            goFamily={(view) => { setQuery(""); setFamilyViewHint(view); navigate("family"); }}
+            goJourney={() => { setQuery(""); navigate("journey"); }}
+          />
+        ) : page === "person" && selectedPerson ? (
+          <PersonDetail
+            person={selectedPerson}
+            people={people}
+            relationships={relationships}
+            branchLabel={branchFor(selectedPerson)}
+            back={() => navigate("family")}
+            edit={setEditing}
+            invite={setInviting}
+            openPerson={(person) => navigate("person", person.id)}
+          />
         ) : page === "home" ? (
           <Overview
             people={people}
+            relationships={relationships}
             matches={matches}
+            identityCandidates={identityCandidates}
             profile={profile}
             setPage={setPage}
-            openAdd={() =>
-              setAdding(people.find((person) => person.isSelf) || people[0])
-            }
+            openAdd={(anchor = selfPerson) => { setVoiceDraft(null); setAdding(anchor || selfPerson); }}
+            inviteRelative={() => {
+              const target = people.find((person) => !person.isSelf && !person.linkedUserId && !person.isPlaceholder);
+              if (target) setInviting(target);
+              else { setVoiceDraft(null); setAdding(selfPerson); }
+            }}
+            openSurnames={() => { setFamilyViewHint("surnames"); navigate("family"); }}
+            addFamilyPlace={() => {
+              navigate("journey");
+              if (selfPerson) setPlaceEditing(selfPerson);
+            }}
           />
         ) : page === "family" ? (
           <Family
+            key={familyViewHint}
             people={people}
-            openAdd={() =>
-              setAdding(people.find((person) => person.isSelf) || people[0])
-            }
+            relationships={relationships}
+            initialView={familyViewHint}
+            openAdd={() => { setVoiceDraft(null); setAdding(selfPerson); }}
             editPerson={setEditing}
             deletePerson={deletePerson}
             invitePerson={setInviting}
             openMerge={() => setMergingPeople(true)}
+            openPerson={(person) => navigate("person", person.id)}
+            openVoice={() => setShowVoice(true)}
           />
         ) : page === "tree" ? (
           <Tree
             people={people}
             relationships={relationships}
-            addRelative={setAdding}
+            addRelative={(person) => { setVoiceDraft(null); setAdding(person); }}
             addUnknownSiblings={setPlaceholdersFor}
-            editPerson={setEditing}
+            editPerson={(person) => navigate("person", person.id)}
             openLinkPeople={() => setLinkingPeople(true)}
+          />
+        ) : page === "journey" ? (
+          <JourneyMap
+            people={people}
+            relationships={relationships}
+            branchFor={branchFor}
+            openPerson={(person) => navigate("person", person.id)}
+            addPlace={(person = selfPerson) => {
+              if (person) setPlaceEditing(person);
+            }}
           />
         ) : (
           <Connections
             matches={matches}
             identityCandidates={identityCandidates}
             inbox={inbox}
+            familyUpdates={familyUpdates}
+            invitations={invitationActivity}
+            markFamilyUpdatesRead={markFamilyUpdatesRead}
             connect={connect}
             requestIdentity={requestIdentity}
             dismissIdentity={dismissIdentity}
             respondInbox={respondInbox}
+            revokeInvite={revokeInvite}
+            resendInvite={resendInvite}
           />
         )}
       </main>
@@ -4383,8 +4819,9 @@ function FamilyApp({ session }) {
           anchor={adding}
           people={people}
           relationships={relationships}
-          close={() => setAdding(false)}
+          close={() => { setAdding(false); setVoiceDraft(null); }}
           savePerson={savePerson}
+          draft={voiceDraft}
         />
       )}
       {editing && (
@@ -4396,8 +4833,18 @@ function FamilyApp({ session }) {
           savePerson={savePerson}
         />
       )}
+      {placeEditing && (
+        <PersonModal
+          person={placeEditing}
+          people={people}
+          relationships={relationships}
+          initialStep={2}
+          close={() => setPlaceEditing(null)}
+          savePerson={savePerson}
+        />
+      )}
       {inviting && (
-        <InviteModal person={inviting} close={() => setInviting(null)} />
+        <InviteModal person={inviting} close={() => setInviting(null)} onSent={refreshTrustData} />
       )}
       {placeholdersFor && (
         <PlaceholderModal
@@ -4424,6 +4871,28 @@ function FamilyApp({ session }) {
           mergePeople={mergePeople}
         />
       )}
+      {identityPromptCandidate && (
+        <IdentitySuggestionPrompt
+          candidate={identityPromptCandidate}
+          close={closeIdentityPrompt}
+          requestIdentity={requestIdentity}
+          dismissIdentity={dismissIdentity}
+        />
+      )}
+      {showVoice && (
+        <VoiceEntry close={() => setShowVoice(false)} onProposal={acceptVoiceProposal} />
+      )}
+      {showProfile && (
+        <ProfilePanel
+          profile={profile}
+          people={people}
+          relationships={relationships}
+          close={() => setShowProfile(false)}
+          saveProfile={saveProfile}
+          previewDeleteAccount={previewDeleteAccount}
+          deleteAccount={deleteAccount}
+        />
+      )}
       {showNotes && <PatchNotes close={() => setShowNotes(false)} />}
     </div>
   );
@@ -4446,5 +4915,5 @@ export default function App() {
         <strong>Opening Vansh</strong>
       </div>
     );
-  return session ? <FamilyApp session={session} /> : <AuthScreen />;
+  return session ? <AppErrorBoundary><FamilyApp session={session} /></AppErrorBoundary> : <AuthScreen />;
 }
