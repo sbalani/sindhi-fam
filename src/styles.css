@@ -1399,6 +1399,99 @@ header {
 .location-error {
   color: #a6503e !important;
 }
+.private-map-wrap {
+  position: relative;
+  min-height: 520px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: #e8eee9;
+}
+.private-map-loading {
+  min-height: 520px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  color: #55756d;
+  background: #eef3f0;
+}
+.private-map {
+  height: 520px;
+  width: 100%;
+}
+.private-map-empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 5px;
+  text-align: center;
+  color: #55756d;
+  background: #eef3f0dd;
+  z-index: 500;
+}
+.private-map-empty strong {
+  font: 600 18px "Newsreader";
+}
+.private-map-empty span {
+  font-size: 9px;
+}
+.leaflet-popup-content strong,
+.leaflet-popup-content span {
+  display: block;
+}
+.leaflet-popup-content span {
+  color: #647772;
+  font-size: 10px;
+  margin-top: 3px;
+}
+.places-summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 12px 15px;
+  margin: 10px 0 18px;
+  border-radius: 8px;
+  background: #e9f0ed;
+  color: #476b63;
+  font-size: 9px;
+}
+.unresolved-places > p {
+  color: #75827e;
+  font-size: 10px;
+  margin: 5px 0 14px;
+}
+.unresolved-places > div {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 8px;
+}
+.unresolved-places button {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  border: 1px solid #dedbd2;
+  border-radius: 8px;
+  background: white;
+  color: #3f5b55;
+  padding: 9px;
+  text-align: left;
+}
+.unresolved-places button > span {
+  flex: 1;
+}
+.unresolved-places button strong,
+.unresolved-places button small {
+  display: block;
+}
+.unresolved-places button small {
+  color: #81908c;
+  margin-top: 2px;
+}
 .legacy-location {
   width: 100%;
   display: block;

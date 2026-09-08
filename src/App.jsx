@@ -1,4 +1,11 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import {
   ArrowLeft,
   ArrowRight,
@@ -31,15 +38,19 @@ import {
 } from "lucide-react";
 import { isSupabaseConfigured, supabase } from "./supabase.js";
 import LocationPicker from "./LocationPicker.jsx";
+import { locationPoint } from "./locationUtils.js";
+
+const WorldMap = lazy(() => import("./WorldMap.jsx"));
 
 const nav = [
   { id: "home", label: "Overview", icon: LayoutDashboard },
   { id: "family", label: "My family", icon: UsersRound },
   { id: "tree", label: "Family map", icon: Network },
+  { id: "places", label: "Places", icon: MapPin },
   { id: "matches", label: "Connections", icon: Sparkles, count: 3 },
 ];
 
-const APP_VERSION = "0.11.1";
+const APP_VERSION = "0.12.0";
 
 const RELATION_OPTIONS = [
   {
@@ -89,6 +100,42 @@ const RELATION_OPTIONS = [
     type: "sibling",
     gender: "female",
     direction: "symmetric",
+  },
+  {
+    value: "half-brother",
+    label: "Half-brother",
+    term: "",
+    type: "sibling",
+    variant: "half",
+    gender: "male",
+    direction: "symmetric",
+  },
+  {
+    value: "half-sister",
+    label: "Half-sister",
+    term: "",
+    type: "sibling",
+    variant: "half",
+    gender: "female",
+    direction: "symmetric",
+  },
+  {
+    value: "adoptive-father",
+    label: "Adoptive father",
+    term: "",
+    type: "parent",
+    variant: "adoptive",
+    gender: "male",
+    direction: "to-anchor",
+  },
+  {
+    value: "adoptive-mother",
+    label: "Adoptive mother",
+    term: "",
+    type: "parent",
+    variant: "adoptive",
+    gender: "female",
+    direction: "to-anchor",
   },
   {
     value: "husband",
@@ -484,36 +531,36 @@ function PatchNotes({ close }) {
         <span className="mini-title">VANSH v{APP_VERSION}</span>
         <h2>What’s new</h2>
         <p>
-          Both sides of a married couple now remain connected to their own
-          parents and siblings.
+          Explore your private family places and record nuanced direct
+          relationships without weakening the graph model.
         </p>
         <div className="release-list">
           <div>
             <Network />
             <span>
-              <strong>Two ancestral sides</strong>Maternal and paternal
-              grandparents connect independently to the same parent couple.
+              <strong>Private Places map</strong>See mapped birthplaces and
+              residences from records you already have permission to view.
             </span>
           </div>
           <div>
             <BookHeart />
             <span>
-              <strong>Side-aware siblings</strong>Each parent’s siblings stay
-              beside that parent rather than being detached by the marriage.
+              <strong>Legacy place correction</strong>Find records that still
+              need a structured city selection before they can be mapped.
             </span>
           </div>
           <div>
             <UserPlus />
             <span>
-              <strong>Measured connectors</strong>Lines now join the actual
-              rendered cards instead of relying on one nested branch owner.
+              <strong>Half-siblings</strong>Store the qualifier separately so a
+              half-sibling remains connected without inferring shared parents.
             </span>
           </div>
           <div>
             <ShieldCheck />
             <span>
-              <strong>One couple, no duplication</strong>Spouses appear once
-              while preserving incoming family links from both sides.
+              <strong>Adoptive parents</strong>Record adoptive parenthood as a
+              direct qualified relationship in either add or link flows.
             </span>
           </div>
         </div>
@@ -776,6 +823,100 @@ function Overview({ people, matches, profile, setPage, openAdd }) {
   );
 }
 
+function Places({ people, editPerson }) {
+  const points = people.flatMap((person) => {
+    const locations = [
+      person.birthLocation
+        ? { ...person.birthLocation, kind: "Birthplace" }
+        : null,
+      ...person.livedLocations.map((location) => ({
+        ...location,
+        kind: residencePeriod(location)
+          ? `Residence · ${residencePeriod(location)}`
+          : "Residence",
+      })),
+    ].filter(Boolean);
+    return locations.flatMap((location) => {
+      const point = locationPoint(location);
+      return point
+        ? [
+            {
+              ...point,
+              label: location.display,
+              detail: `${person.name} · ${location.kind}`,
+            },
+          ]
+        : [];
+    });
+  });
+  const unresolved = people.filter(
+    (person) =>
+      person.legacyBirthPlace ||
+      person.legacyLivedIn ||
+      (person.birthLocation && !locationPoint(person.birthLocation)) ||
+      person.livedLocations.some((location) => !locationPoint(location)),
+  );
+  return (
+    <div className="page inner-page places-page">
+      <div className="section-heading">
+        <div>
+          <span className="eyebrow">PRIVATE FAMILY PLACES</span>
+          <h1>Where your family story moved</h1>
+          <p>
+            Only places from family records you can already access appear here.
+          </p>
+        </div>
+      </div>
+      <Suspense
+        fallback={
+          <div className="private-map-loading">
+            <LoaderCircle className="spin" /> Loading family map
+          </div>
+        }
+      >
+        <WorldMap points={points} />
+      </Suspense>
+      <div className="places-summary">
+        <strong>{points.length} mapped family locations</strong>
+        <span>
+          Birthplaces and residences remain private to the same people who can
+          view each family record.
+        </span>
+      </div>
+      {unresolved.length > 0 && (
+        <section className="panel unresolved-places">
+          <span className="mini-title">NEEDS LOCATION MATCHING</span>
+          <h2>Finish matching older places</h2>
+          <p>
+            These records have free-text places or selections without map
+            coordinates. Editing and selecting the city will place them safely.
+          </p>
+          <div>
+            {unresolved.map((person) => (
+              <button
+                key={person.id}
+                onClick={() => person.canEdit && editPerson(person)}
+                disabled={!person.canEdit}
+              >
+                <Avatar person={person} size="small" />
+                <span>
+                  <strong>{person.name}</strong>
+                  <small>
+                    {[person.legacyBirthPlace, person.legacyLivedIn]
+                      .filter(Boolean)
+                      .join(" · ") || "Reselect a mapped city"}
+                  </small>
+                </span>
+                {person.canEdit && <ArrowRight size={15} />}
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
+    </div>
+  );
+}
+
 function Family({ people, openAdd, editPerson, deletePerson, invitePerson }) {
   return (
     <div className="page inner-page">
@@ -990,7 +1131,8 @@ function Tree({
   // without persisting inferred parent relationships.
   for (let pass = 0; pass < people.length; pass += 1) {
     relationships.forEach((relationship) => {
-      if (relationship.type !== "sibling") return;
+      if (relationship.type !== "sibling" || relationship.variant === "half")
+        return;
       const fromParents = displayParents.get(relationship.from);
       const toParents = displayParents.get(relationship.to);
       if (!fromParents || !toParents) return;
@@ -1182,19 +1324,17 @@ function Tree({
         .map((id) => people.find((item) => item.id === id)?.firstName)
         .filter(Boolean)
         .join(" & ");
-    const parents = relationships
-      .filter((item) => item.type === "parent" && item.to === person.id)
-      .map((item) => item.from);
-    const children = relationships
-      .filter((item) => item.type === "parent" && item.from === person.id)
-      .map((item) => item.to);
-    const siblings = relationships
-      .filter(
-        (item) =>
-          item.type === "sibling" &&
-          (item.from === person.id || item.to === person.id),
-      )
-      .map((item) => (item.from === person.id ? item.to : item.from));
+    const parentRelationships = relationships.filter(
+      (item) => item.type === "parent" && item.to === person.id,
+    );
+    const childRelationships = relationships.filter(
+      (item) => item.type === "parent" && item.from === person.id,
+    );
+    const siblingRelationships = relationships.filter(
+      (item) =>
+        item.type === "sibling" &&
+        (item.from === person.id || item.to === person.id),
+    );
     const partnerRelationships = relationships.filter(
       (item) =>
         ["spouse", "partner"].includes(item.type) &&
@@ -1207,12 +1347,24 @@ function Tree({
       (item) => item.startYear,
     )?.startYear;
     return [
-      parents.length ? `Child of ${names(parents)}` : null,
+      parentRelationships.some((item) => !item.variant)
+        ? `Child of ${names(parentRelationships.filter((item) => !item.variant).map((item) => item.from))}`
+        : null,
+      parentRelationships.some((item) => item.variant === "adoptive")
+        ? `Adoptive child of ${names(parentRelationships.filter((item) => item.variant === "adoptive").map((item) => item.from))}`
+        : null,
       partners.length
         ? `Partner of ${names(partners)}${partnershipYear ? ` · married ${partnershipYear}` : ""}`
         : null,
-      siblings.length ? `Sibling of ${names(siblings)}` : null,
-      children.length ? `Parent of ${names(children)}` : null,
+      siblingRelationships.some((item) => !item.variant)
+        ? `Sibling of ${names(siblingRelationships.filter((item) => !item.variant).map((item) => (item.from === person.id ? item.to : item.from)))}`
+        : null,
+      siblingRelationships.some((item) => item.variant === "half")
+        ? `Half-sibling of ${names(siblingRelationships.filter((item) => item.variant === "half").map((item) => (item.from === person.id ? item.to : item.from)))}`
+        : null,
+      childRelationships.length
+        ? `Parent of ${names(childRelationships.map((item) => item.to))}`
+        : null,
     ].filter(Boolean);
   };
   const renderTreePerson = (person, index, unitLength) => (
@@ -1974,7 +2126,16 @@ function LinkPeopleModal({ people, close, linkPeople }) {
                 {personB?.firstName || "Second person"} is parent of{" "}
                 {personA?.firstName || "first person"}
               </option>
+              <option value="adoptive-parent-a">
+                {personA?.firstName || "First person"} is adoptive parent of{" "}
+                {personB?.firstName || "second person"}
+              </option>
+              <option value="adoptive-parent-b">
+                {personB?.firstName || "Second person"} is adoptive parent of{" "}
+                {personA?.firstName || "first person"}
+              </option>
               <option value="sibling">They are siblings</option>
+              <option value="half-sibling">They are half-siblings</option>
               <option value="spouse">They are married / spouses</option>
               <option value="partner">They are partners</option>
             </select>
@@ -2044,7 +2205,7 @@ function PersonModal({
       )
       .map((item) => (item.from === anchorId ? item.to : item.from));
     const suggestedParentIds =
-      relation?.type === "sibling"
+      relation?.type === "sibling" && !relation.variant
         ? parents
         : relation?.direction === "from-anchor"
           ? partners
@@ -2588,6 +2749,7 @@ function FamilyApp({ session }) {
           from: row.person_a_id,
           to: row.person_b_id,
           type: row.relationship_type,
+          variant: row.relationship_variant || null,
           startYear: row.start_year,
         })),
       );
@@ -2776,6 +2938,7 @@ function FamilyApp({ session }) {
           person_a_id: personAId,
           person_b_id: personBId,
           relationship_type: relation.type,
+          relationship_variant: relation.variant || null,
           start_year:
             ["spouse", "partner"].includes(relation.type) && form.marriageYear
               ? Number(form.marriageYear)
@@ -2792,6 +2955,7 @@ function FamilyApp({ session }) {
             person_a_id: parentId,
             person_b_id: memberResult.data.id,
             relationship_type: "parent",
+            relationship_variant: null,
             start_year: null,
           })),
       ];
@@ -2804,6 +2968,7 @@ function FamilyApp({ session }) {
           person_a_id: memberResult.data.id,
           person_b_id: spouseId,
           relationship_type: "spouse",
+          relationship_variant: null,
           start_year: form.marriageYear ? Number(form.marriageYear) : null,
         });
         if (
@@ -2818,6 +2983,7 @@ function FamilyApp({ session }) {
             person_a_id: spouseMember.id,
             person_b_id: anchorPerson.id,
             relationship_type: "parent",
+            relationship_variant: null,
             start_year: null,
           });
         }
@@ -2848,6 +3014,7 @@ function FamilyApp({ session }) {
           from: relationship.person_a_id,
           to: relationship.person_b_id,
           type: relationship.relationship_type,
+          variant: relationship.relationship_variant || null,
           startYear: relationship.start_year,
         })),
       ]);
@@ -2974,14 +3141,24 @@ function FamilyApp({ session }) {
         Number(startYear) > new Date().getFullYear())
     )
       throw new Error("Enter a valid four-digit relationship year.");
-    const type =
-      relation === "parent-a" || relation === "parent-b" ? "parent" : relation;
-    const from = relation === "parent-b" ? personB.id : personA.id;
-    const to = relation === "parent-b" ? personA.id : personB.id;
+    const parentRelation = relation.includes("parent");
+    const type = parentRelation
+      ? "parent"
+      : relation === "half-sibling"
+        ? "sibling"
+        : relation;
+    const variant = relation.startsWith("adoptive-")
+      ? "adoptive"
+      : relation === "half-sibling"
+        ? "half"
+        : null;
+    const from = relation.endsWith("parent-b") ? personB.id : personA.id;
+    const to = relation.endsWith("parent-b") ? personA.id : personB.id;
     const symmetric = ["sibling", "spouse", "partner"].includes(type);
     const duplicate = relationships.some(
       (item) =>
         item.type === type &&
+        (item.variant || null) === variant &&
         ((item.from === from && item.to === to) ||
           (symmetric && item.from === to && item.to === from)),
     );
@@ -2995,6 +3172,7 @@ function FamilyApp({ session }) {
         person_a_id: from,
         person_b_id: to,
         relationship_type: type,
+        relationship_variant: variant,
         start_year:
           ["spouse", "partner"].includes(type) && startYear
             ? Number(startYear)
@@ -3005,7 +3183,14 @@ function FamilyApp({ session }) {
     if (result.error) throw result.error;
     setRelationships((current) => [
       ...current,
-      { id: result.data.id, from, to, type, startYear: result.data.start_year },
+      {
+        id: result.data.id,
+        from,
+        to,
+        type,
+        variant: result.data.relationship_variant || null,
+        startYear: result.data.start_year,
+      },
     ]);
   };
   const deletePerson = async (person) => {
@@ -3128,6 +3313,8 @@ function FamilyApp({ session }) {
             editPerson={setEditing}
             openLinkPeople={() => setLinkingPeople(true)}
           />
+        ) : page === "places" ? (
+          <Places people={people} editPerson={setEditing} />
         ) : (
           <Matches matches={matches} connect={connect} />
         )}
