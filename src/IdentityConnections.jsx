@@ -132,7 +132,7 @@ export default function IdentityConnections({
         <label>Date of birth<input required type="date" value={form.birthDate} onChange={e => setForm({...form, birthDate:e.target.value})}/></label>
         <label>Birth place <small>City or country</small><input value={form.birthLocation} onChange={e => setForm({...form, birthLocation:e.target.value})} placeholder="e.g. Mumbai, India"/></label>
         <label className="wide">Current / last known location <small>City or country</small><input value={form.currentLocation} onChange={e => setForm({...form, currentLocation:e.target.value})} placeholder="e.g. Barcelona, Spain"/></label>
-        <label className="discovery-opt-in wide"><input type="checkbox" checked={form.discoveryEnabled} onChange={e => setForm({...form, discoveryEnabled:e.target.checked})}/><span><strong>Allow same-surname discovery</strong><small>Other signed-in Vansh users with the same surname can see your name, birth year and broad location. Never your email, exact birth date or family tree.</small></span></label>
+        <label className="discovery-opt-in wide"><input type="checkbox" checked={form.discoveryEnabled} onChange={e => setForm({...form, discoveryEnabled:e.target.checked})}/><span><strong>Allow same-surname discovery</strong><small>Other signed-in Vansh users with the same surname see only a masked name and limited matching clues before you connect. Never your email, exact birth date, precise location or family tree.</small></span></label>
         <div className="wide matching-profile-actions"><button className="primary" disabled={savingProfile}>{savingProfile ? <LoaderCircle className="spin" size={15}/> : <Check size={15}/>} Save matching details</button></div>
       </form>
     </section>

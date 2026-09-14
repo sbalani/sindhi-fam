@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { LoaderCircle, MapPin, Search, X } from "lucide-react";
 import { supabase } from "./supabase.js";
+import { canonicalPlaceSearchQuery } from "./utils/sindhiSearch.js";
 
 const normalizePhoton = (payload) => {
   const seen = new Set();
@@ -59,24 +60,25 @@ export default function LocationPicker({
     const controller = new AbortController();
     const timer = window.setTimeout(async () => {
       const term = query.trim();
+      const providerQuery = canonicalPlaceSearchQuery(term);
       setSearching(true);
       setError("");
       let nextResults = [];
       try {
         const { data, error: functionError } = await supabase.functions.invoke(
           "search-places",
-          { body: { query: term } },
+          { body: { query: providerQuery } },
         );
         if (!functionError && Array.isArray(data?.results)) {
           nextResults = data.results;
           setSearchSource("server");
         } else {
-          nextResults = await directPlaceSearch(term, controller.signal);
+          nextResults = await directPlaceSearch(providerQuery, controller.signal);
           setSearchSource("direct");
         }
       } catch {
         try {
-          nextResults = await directPlaceSearch(term, controller.signal);
+          nextResults = await directPlaceSearch(providerQuery, controller.signal);
           setSearchSource("direct");
         } catch (fallbackError) {
           if (fallbackError?.name === "AbortError") return;
@@ -235,7 +237,7 @@ export default function LocationPicker({
               placeholder={
                 multiple && selected.length
                   ? "Add another city"
-                  : "Search for a city"
+                  : "Search for a city — Roman Sindhi or سنڌي"
               }
               autoComplete="off"
             />
