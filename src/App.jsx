@@ -40,6 +40,7 @@ import SearchResults from "./components/SearchResults.jsx";
 import FamilyConnectionsEditor, { ensureTwoParentRows } from "./components/FamilyConnectionsEditor.jsx";
 import AccessibleModal from "./components/AccessibleModal.jsx";
 import AppErrorBoundary from "./components/AppErrorBoundary.jsx";
+import { LegalPage, SiteFooter } from "./components/LegalPages.jsx";
 import useUrlPage from "./hooks/useUrlPage.js";
 import useDialogAccessibility from "./hooks/useDialogAccessibility.js";
 import { parentIdsFor, siblingDetailsFor, deriveBranchLabel, shortestRelationshipPath } from "./utils/kinship.js";
@@ -534,12 +535,18 @@ function AuthScreen() {
               ? "Already have an account? Sign in"
               : "New to Vansh? Create an account"}
           </button>
+          {mode === "signup" && (
+            <p className="auth-legal-copy">
+              By creating an account, you agree to the <a href="/terms">Terms of Use</a> and acknowledge the <a href="/privacy">Privacy Policy</a>.
+            </p>
+          )}
           <div className="form-privacy">
             <LockKeyhole size={14} /> Your information is encrypted and
             protected by account-level access rules.
           </div>
         </form>
       </section>
+      <SiteFooter className="auth-site-footer" />
     </div>
   );
 }
@@ -4897,6 +4904,7 @@ function FamilyApp({ session }) {
             resendInvite={resendInvite}
           />
         )}
+        <SiteFooter className="app-site-footer" />
       </main>
       {adding && (
         <PersonModal
@@ -4982,7 +4990,7 @@ function FamilyApp({ session }) {
   );
 }
 
-export default function App() {
+function SessionApp() {
   const [session, setSession] = useState(() => (supabase ? undefined : null));
   useEffect(() => {
     if (!supabase) return undefined;
@@ -5000,4 +5008,11 @@ export default function App() {
       </div>
     );
   return session ? <AppErrorBoundary><FamilyApp session={session} /></AppErrorBoundary> : <AuthScreen />;
+}
+
+export default function App() {
+  const legalPath = window.location.pathname.replace(/\/+$/, "") || "/";
+  if (legalPath === "/privacy") return <LegalPage type="privacy" />;
+  if (legalPath === "/terms") return <LegalPage type="terms" />;
+  return <SessionApp />;
 }
