@@ -6,5 +6,12 @@ dist/
 .env.*
 !.env.example
 
+voice_backend/.venv/
+.venv/
+__pycache__/
+*.py[cod]
+
+supabase/.temp/
+
 *.log
 .DS_Store

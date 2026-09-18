@@ -45,7 +45,6 @@ import useDialogAccessibility from "./hooks/useDialogAccessibility.js";
 import { parentIdsFor, siblingDetailsFor, deriveBranchLabel, shortestRelationshipPath } from "./utils/kinship.js";
 import { validatePersonForm } from "./utils/validation.js";
 import { matchesAnyField } from "./utils/sindhiSearch.js";
-import { NAME_ALIAS_KINDS } from "./utils/nameAliases.js";
 
 const nav = [
   { id: "home", label: "Overview", icon: LayoutDashboard },
@@ -55,7 +54,7 @@ const nav = [
   { id: "matches", label: "Connections", icon: Sparkles },
 ];
 
-const APP_VERSION = "0.15.0";
+const APP_VERSION = "0.14.0";
 
 const RELATION_OPTIONS = [
   {
@@ -187,9 +186,6 @@ const personFromRow = (row, index = 0, currentUserId = "") => {
     surname: row.surname,
     nickname: row.nickname || "",
     maidenName: row.maiden_name || "",
-    alternateNames: Array.isArray(row.alternate_names)
-      ? row.alternate_names.filter((alias) => alias && typeof alias.name === "string" && alias.name.trim())
-      : [],
     birthYear: row.birth_year?.toString() || "",
     birthDate: row.birth_date || "",
     birthApproximate: Boolean(row.birth_approximate),
@@ -985,7 +981,6 @@ function Family({
       person.firstName,
       person.surname,
       person.maidenName,
-      ...(person.alternateNames || []).map((alias) => alias.name),
       person.birthPlace,
       person.livedIn,
       person.legacyLivedIn,
@@ -3104,7 +3099,6 @@ function PersonModal({
     nickname: person?.nickname || "",
     surname: person?.surname || draft?.surname || anchor?.surname || "",
     maidenName: person?.maidenName || "",
-    alternateNames: person?.alternateNames || [],
     birthDate: person?.birthDate || "",
     birthYear: person?.birthYear || draft?.birthYear || "",
     birthApproximate: person?.birthApproximate || false,
@@ -3131,23 +3125,6 @@ function PersonModal({
   const [error, setError] = useState("");
   const [duplicateCandidates, setDuplicateCandidates] = useState([]);
   const update = (e) => setForm({ ...form, [e.target.name]: e.target.value });
-  const addAlternateName = () =>
-    setForm((current) => ({
-      ...current,
-      alternateNames: [...(current.alternateNames || []), { name: "", kind: "sindhi_script" }],
-    }));
-  const updateAlternateName = (index, field, value) =>
-    setForm((current) => ({
-      ...current,
-      alternateNames: (current.alternateNames || []).map((alias, aliasIndex) =>
-        aliasIndex === index ? { ...alias, [field]: value } : alias,
-      ),
-    }));
-  const removeAlternateName = (index) =>
-    setForm((current) => ({
-      ...current,
-      alternateNames: (current.alternateNames || []).filter((_, aliasIndex) => aliasIndex !== index),
-    }));
   const updateRelation = (event) => {
     const relation = RELATION_OPTIONS.find((option) => option.value === event.target.value);
     setForm((current) => ({
@@ -3281,48 +3258,6 @@ function PersonModal({
                   placeholder="If applicable"
                 />
               </label>
-              <div className="wide alias-editor">
-                <div className="alias-editor-heading">
-                  <div>
-                    <strong>Alternate names</strong>
-                    <small>Optional · Sindhi script, Roman spellings, former names or historical variants</small>
-                  </div>
-                  <button type="button" className="quiet alias-add" onClick={addAlternateName}>
-                    <Plus size={15} /> Add name
-                  </button>
-                </div>
-                {(form.alternateNames || []).map((alias, index) => (
-                  <div className="alias-row" key={`alias-${index}`}>
-                    <select
-                      aria-label={`Alternate name type ${index + 1}`}
-                      value={alias.kind || "other"}
-                      onChange={(event) => updateAlternateName(index, "kind", event.target.value)}
-                    >
-                      {NAME_ALIAS_KINDS.map((option) => (
-                        <option value={option.value} key={option.value}>{option.label}</option>
-                      ))}
-                    </select>
-                    <input
-                      aria-label={`Alternate name ${index + 1}`}
-                      value={alias.name || ""}
-                      onChange={(event) => updateAlternateName(index, "name", event.target.value)}
-                      maxLength={160}
-                      placeholder={alias.kind === "sindhi_script" ? "e.g. رميش نانواڻي" : "e.g. Ramesh Nanwani"}
-                    />
-                    <button
-                      type="button"
-                      className="icon-button alias-remove"
-                      aria-label={`Remove alternate name ${index + 1}`}
-                      onClick={() => removeAlternateName(index)}
-                    >
-                      <Trash2 size={16} />
-                    </button>
-                  </div>
-                ))}
-                {(form.alternateNames || []).length === 0 && (
-                  <p className="alias-empty">Add names this person is also known by. These are searchable but the primary display name stays unchanged.</p>
-                )}
-              </div>
               {person ? (
                 <label>
                   Gender wording <small>Optional</small>
@@ -3979,7 +3914,6 @@ function FamilyApp({ session }) {
       surname: validated.surname,
       nickname: form.nickname.trim() || null,
       maiden_name: form.maidenName.trim() || null,
-      alternate_names: validated.alternateNames,
       gender: form.gender,
       birth_date: form.birthDate || null,
       birth_year: effectiveBirthYear,
@@ -4010,7 +3944,6 @@ function FamilyApp({ session }) {
         surname: payload.surname,
         nickname: payload.nickname,
         maiden_name: payload.maiden_name,
-        alternate_names: payload.alternate_names,
         gender: payload.gender,
         birth_date: payload.birth_date,
         birth_year: payload.birth_year,
@@ -4033,7 +3966,6 @@ function FamilyApp({ session }) {
         surname: existing.surname,
         nickname: existing.nickname || null,
         maiden_name: existing.maidenName || null,
-        alternate_names: existing.alternateNames || [],
         gender: existing.gender,
         birth_date: existing.birthDate || null,
         birth_year: existing.birthYear ? Number(existing.birthYear) : null,

@@ -1,0 +1,20 @@
+-- Manual pgTAP-style regression plan for a local Supabase instance.
+-- Run after `supabase db reset`. These assertions intentionally focus on the
+-- security/data-integrity rules most likely to corrupt a collaborative tree.
+--
+-- 1. Claimed family member: creator UPDATE fails; linked user UPDATE succeeds.
+-- 2. Claimed family member: creator DELETE fails.
+-- 3. Unclaimed member: creator UPDATE/DELETE succeeds.
+-- 4. update_family_member_with_revision succeeds with current revision and
+--    fails with SQLSTATE 40001 when the expected revision is stale.
+-- 5. Two parent edges to the same child are accepted, including two mothers or
+--    two fathers; duplicate identical parent edge should be prevented by app/RPC.
+-- 6. Half siblings derived from one shared biological/adoptive parent.
+-- 7. Step/guardian shared parent is not classified as biological half sibling.
+-- 8. Remarriage allows multiple spouse/partner relationships.
+-- 9. Invitation preview exposes only members in the requested scope.
+-- 10. Revoking an invitation only works for its inviter.
+-- 11. Discovery disabled profile does not appear in identity/family matching.
+-- 12. member_change_history is readable only when the viewer can access the member.
+-- 13. Cross-graph direct relationship INSERT fails.
+-- 14. Merge refuses claimed records and preserves all non-duplicate relationship edges.

@@ -1,5 +1,7 @@
 # Vansh
 
+Current release: **0.12.0** — see `CHANGELOG.md` and `P0_DEPLOYMENT.md`.
+
 A private, collaborative Sindhi family tree for recording relatives, relationships, family locations, and migration history.
 
 Live app: https://sindhi-fam.vercel.app

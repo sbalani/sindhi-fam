@@ -1,0 +1,40 @@
+Vansh P1/P2 + pre-release fixes working copy
+Target branch: p1-p2-all
+Release candidate version: 0.13.1
+
+New fixes from manual testing:
+- Person create/edit now includes parent management, two-parent entry, placeholder parents, additional parents, spouse/partner management, marriage year, optional divorce/end year, and remarriage.
+- Family tree vertical wheel scrolling is released back to the page when the white tree canvas has no vertical scroll of its own.
+- Identity candidates can prompt automatically on first entry and candidate matching has been repaired for strong living-person records.
+- City search has an Edge Function -> direct Photon fallback.
+- Family Journey uses an interactive OpenStreetMap/Leaflet map with a built-in fallback.
+- New database migration repairs legacy auth.users foreign keys that can cause Supabase "Database error deleting user".
+- delete-account now preserves a shared graph by selecting accepted/verified collaborators as possible successors and reports deployment/FK errors more clearly.
+- Existing accounts can reopen onboarding using Overview -> Setup checklist, making item 31 testable without creating another account.
+- PRE_RELEASE_SETUP.md documents the required database, Edge Function and custom-SMTP setup.
+
+Important changed/added paths include:
+ M package-lock.json
+ M package.json
+ M src/App.jsx
+ M src/LocationPicker.jsx
+ M src/components/JourneyMap.jsx
+ M src/components/Onboarding.jsx
+ M src/styles.css
+ M supabase/functions/delete-account/index.ts
+?? src/components/FamilyConnectionsEditor.jsx
+?? supabase/migrations/20260830090000_pre_release_family_context_auth_fixes.sql
+?? PRE_RELEASE_SETUP.md
+ M P1_P2_TESTING.md
+
+Automated unit result during this edit session: 11 passed, 0 failed before the local dependency folder was refreshed.
+Final lint/build still must be run with `npm ci` on the user's machine before Git commit.
+
+v0.13.2
+- src/App.jsx
+- src/components/Onboarding.jsx
+- src/components/ProfilePanel.jsx
+- src/styles.css
+- supabase/functions/delete-account/index.ts
+- supabase/migrations/20260830110000_account_persistence_family_updates.sql
+- supabase/tests/auth_delete_v0132_diagnostic.sql
