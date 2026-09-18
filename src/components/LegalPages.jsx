@@ -90,13 +90,27 @@ function PrivacyPolicy() {
           <li>process profile claims, corrections, invitations and family updates;</li>
           <li>provide search, place, language and other product features;</li>
           <li>secure, troubleshoot and improve Vansh;</li>
+          <li>conduct research and, using aggregated, anonymised or de-identified information where appropriate, help develop future products, services, technologies or ventures operated by <strong>{SITE_CONFIG.companyName}</strong>;</li>
           <li>respond to support, privacy and legal requests.</li>
         </ul>
         <p>We do not use family-tree information for unrelated advertising purposes.</p>
       </section>
 
       <section>
-        <h2>5. Visibility and sharing</h2>
+        <h2>5. Research, future products and ventures</h2>
+        <p>
+          <strong>{SITE_CONFIG.companyName}</strong> may use aggregated, anonymised or de-identified information derived from use of Vansh to conduct research, understand how the service is used, and develop, test or improve Vansh and other future products, services, technologies or ventures operated by the company.
+        </p>
+        <p>
+          Where we wish to use identifiable personal information for a materially different purpose from the purposes described in this Privacy Policy, we will assess whether that use is compatible with the original purpose and, where required by applicable law, provide additional notice or obtain consent before doing so.
+        </p>
+        <p>
+          We do not sell identifiable family-tree information to third parties.
+        </p>
+      </section>
+
+      <section>
+        <h2>6. Visibility and sharing</h2>
         <p>
           Vansh is designed to be private by default. Family records are not intended to be publicly searchable on the open web. Access depends on family connections, invitations, claims and permissions within Vansh.
         </p>
@@ -106,14 +120,14 @@ function PrivacyPolicy() {
       </section>
 
       <section>
-        <h2>6. Service providers</h2>
+        <h2>7. Service providers</h2>
         <p>
           We may use trusted service providers to operate Vansh, such as database, authentication, website-hosting, email-delivery, mapping or language-processing providers. These providers may process information only as necessary to provide their services to us. The final list of material providers will be maintained as the production infrastructure is finalized.
         </p>
       </section>
 
       <section>
-        <h2>7. Account deletion and shared family history</h2>
+        <h2>8. Account deletion and shared family history</h2>
         <p>
           You can request deletion of your Vansh account. Deleting an account removes that user's login and account access. Because Vansh is collaborative, information that forms part of a shared family-history record may not automatically disappear solely because the person who originally entered it deletes their account.
         </p>
@@ -123,21 +137,21 @@ function PrivacyPolicy() {
       </section>
 
       <section>
-        <h2>8. Data retention</h2>
+        <h2>9. Data retention</h2>
         <p>
           We retain account information while an account remains active and for as long as reasonably necessary to operate, secure and comply with legal obligations relating to the service. Shared genealogy information may be retained as part of a family record after a contributor deletes their account, subject to applicable privacy rights and legitimate deletion or correction requests.
         </p>
       </section>
 
       <section>
-        <h2>9. Security</h2>
+        <h2>10. Security</h2>
         <p>
           We use technical and organizational safeguards intended to protect Vansh data, including authenticated access and database access-control rules. No online service can guarantee absolute security, and users should protect their login credentials and notify us of suspected unauthorized access.
         </p>
       </section>
 
       <section>
-        <h2>10. Your choices and rights</h2>
+        <h2>11. Your choices and rights</h2>
         <p>
           Depending on where you live, you may have rights relating to your personal information, including access, correction, deletion, restriction, objection or portability. You may also have the right to complain to your local data-protection authority.
         </p>
@@ -147,14 +161,14 @@ function PrivacyPolicy() {
       </section>
 
       <section>
-        <h2>11. Children</h2>
+        <h2>12. Children</h2>
         <p>
           Vansh is not intended for children to independently create accounts unless permitted by applicable law and any required parental or guardian authorization. Family trees may contain genealogical information about minors entered by adult relatives; users should add only information appropriate for a private family-history service.
         </p>
       </section>
 
       <section>
-        <h2>12. Changes to this policy</h2>
+        <h2>13. Changes to this policy</h2>
         <p>
           We may update this Privacy Policy as Vansh develops. If changes materially affect how personal information is handled, we will provide appropriate notice through the service or other reasonable means.
         </p>
