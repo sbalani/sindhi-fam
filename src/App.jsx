@@ -37,7 +37,7 @@ import Onboarding from "./components/Onboarding.jsx";
 import VoiceEntry from "./components/VoiceEntry.jsx";
 import ProfilePanel from "./components/ProfilePanel.jsx";
 import SearchResults from "./components/SearchResults.jsx";
-import FamilyConnectionsEditor, { ensureTwoParentRows } from "./components/FamilyConnectionsEditor.jsx";
+import FamilyConnectionsEditor from "./components/FamilyConnectionsEditor.jsx";
 import AccessibleModal from "./components/AccessibleModal.jsx";
 import AppErrorBoundary from "./components/AppErrorBoundary.jsx";
 import { LegalPage, SiteFooter } from "./components/LegalPages.jsx";
@@ -47,6 +47,12 @@ import { parentIdsFor, siblingDetailsFor, deriveBranchLabel, shortestRelationshi
 import { validatePersonForm } from "./utils/validation.js";
 import { matchesAnyField } from "./utils/sindhiSearch.js";
 import { NAME_ALIAS_KINDS } from "./utils/nameAliases.js";
+import {
+  connectionBundleFromForm,
+  ensureTwoParentRows,
+  primaryConnectionFromForm,
+  relationshipRpcArgs,
+} from "./utils/familyEditing.js";
 
 const nav = [
   { id: "home", label: "Overview", icon: LayoutDashboard },
@@ -170,6 +176,22 @@ const residencePeriod = (location) => {
 const residenceLabel = (location) =>
   [location.display, residencePeriod(location)].filter(Boolean).join(" · ");
 
+const withConnectionSnapshots = async (rows) => {
+  if (!rows.length) return rows;
+  const snapshotResult = await supabase.rpc("get_managed_relationship_snapshots", {
+    p_member_ids: rows.map((row) => row.id),
+  });
+  if (snapshotResult.error) throw snapshotResult.error;
+  const snapshots = new Map(
+    (snapshotResult.data || []).map((snapshot) => [snapshot.member_id, snapshot]),
+  );
+  return rows.map((row) => ({
+    ...row,
+    _relationship_hash: snapshots.get(row.id)?.content_hash || null,
+    _connection_snapshot: snapshots.get(row.id)?.connections || null,
+  }));
+};
+
 const personFromRow = (row, index = 0, currentUserId = "") => {
   const isClaimed = Boolean(row.linked_user_id);
   const isIdentityOwner = row.linked_user_id === currentUserId;
@@ -213,6 +235,8 @@ const personFromRow = (row, index = 0, currentUserId = "") => {
     provenanceNote: row.provenance_note || "",
     privacyLevel: row.privacy_level || "family",
     revision: row.revision || 1,
+    relationshipHash: row._relationship_hash || null,
+    connectionSnapshot: row._connection_snapshot || null,
     updatedAt: row.updated_at || null,
     updatedBy: row.updated_by || null,
     confirmationCount: row.confirmation_count || 0,
@@ -289,6 +313,9 @@ const familyStateFromRows = (memberRows, relationshipRows, currentUserId) => {
       variant: row.relationship_variant || "unspecified",
       startYear: row.start_year,
       endYear: row.end_year,
+      status: row.relationship_status || "unspecified",
+      confidence: row.confidence || "reported",
+      provenanceNote: row.provenance_note || "",
       revision: row.revision || 1,
     }))
     .filter((row) => {
@@ -3039,6 +3066,8 @@ function PersonModal({
         mode: "existing",
         personId: item.from,
         variant: item.variant || "biological",
+        confidence: item.confidence || "reported",
+        provenanceNote: item.provenanceNote || "",
         placeholderLabel: "",
         placeholderGender: "unspecified",
       }));
@@ -3055,9 +3084,11 @@ function PersonModal({
         mode: "existing",
         personId: item.from === personId ? item.to : item.from,
         type: item.type,
-        variant: item.variant || (item.endYear ? "former" : "current"),
+        variant: item.status || (item.endYear ? "former" : "unspecified"),
         startYear: item.startYear?.toString() || "",
         endYear: item.endYear?.toString() || "",
+        confidence: item.confidence || "reported",
+        provenanceNote: item.provenanceNote || "",
         placeholderLabel: "",
         placeholderGender: "unspecified",
         alsoParentOfAnchor: false,
@@ -3714,33 +3745,12 @@ function FamilyApp({ session }) {
         return;
       }
       let rows = peopleResult.data;
-      if (!rows.length && session.user.user_metadata.family_surname) {
-        const parts = (profileResult.data.display_name || "")
-          .trim()
-          .split(/\s+/);
-        const selfResult = await supabase
-          .from("family_members")
-          .insert({
-            owner_id: session.user.id,
-            created_by: session.user.id,
-            linked_user_id: session.user.id,
-            first_name: profileResult.data.first_name || parts[0] || "Me",
-            surname: profileResult.data.surname || session.user.user_metadata.family_surname,
-            birth_date: profileResult.data.birth_date || null,
-            birth_year: profileResult.data.birth_date
-              ? Number(profileResult.data.birth_date.slice(0, 4))
-              : null,
-            birth_place: profileResult.data.birth_location_text || null,
-            lived_in:
-              profileResult.data.current_location_text ||
-              profileResult.data.location ||
-              null,
-            maiden_name: profileResult.data.birth_surname || null,
-            family_side: "You",
-            is_self: true,
-          })
-          .select()
-          .single();
+      if (
+        !rows.some(
+          (row) => row.owner_id === session.user.id && row.is_self,
+        ) && profileResult.data.surname
+      ) {
+        const selfResult = await supabase.rpc("ensure_self_family_member");
         if (selfResult.error) {
           if (active) {
             setDataError(selfResult.error.message);
@@ -3748,8 +3758,9 @@ function FamilyApp({ session }) {
           }
           return;
         }
-        rows = [selfResult.data];
+        rows = [...rows, selfResult.data];
       }
+      rows = await withConnectionSnapshots(rows);
       const [matchResult, identityResult, inboxResult, invitationResult, familyUpdateResult] = await Promise.all([
         supabase.rpc("find_family_matches"),
         supabase.rpc("find_identity_claim_candidates"),
@@ -3915,7 +3926,8 @@ function FamilyApp({ session }) {
     ]);
     if (peopleResult.error) throw peopleResult.error;
     if (relationshipsResult.error) throw relationshipsResult.error;
-    const familyState = familyStateFromRows(peopleResult.data, relationshipsResult.data, session.user.id);
+    const rows = await withConnectionSnapshots(peopleResult.data);
+    const familyState = familyStateFromRows(rows, relationshipsResult.data, session.user.id);
     setPeople(familyState.people);
     setRelationships(familyState.relationships);
     await refreshTrustData();
@@ -4009,65 +4021,21 @@ function FamilyApp({ session }) {
     if (!payload.first_name || !payload.surname)
       throw new Error("First name and surname are required.");
 
-    // Claimed people control their own identity fields. Other relatives can
-    // propose changes, but cannot overwrite those fields directly.
+    const details = Object.fromEntries(
+      Object.entries(payload).filter(([key]) => key !== "owner_id"),
+    );
+    const connections = connectionBundleFromForm(form, existing, relationships);
+
+    // Claimed people control their profile and graph connections. Other
+    // relatives submit one coherent proposal to the existing launch inbox.
     if (existing?.canSuggest) {
-      const proposed = {
-        first_name: payload.first_name,
-        surname: payload.surname,
-        nickname: payload.nickname,
-        maiden_name: payload.maiden_name,
-        alternate_names: payload.alternate_names,
-        gender: payload.gender,
-        birth_date: payload.birth_date,
-        birth_year: payload.birth_year,
-        birth_approximate: payload.birth_approximate,
-        birth_location: payload.birth_location,
-        death_date: payload.death_date,
-        death_year: payload.death_year,
-        death_approximate: payload.death_approximate,
-        death_location: payload.death_location,
-        death_place: payload.death_place,
-        lived_locations: payload.lived_locations,
-        fact_confidence: payload.fact_confidence,
-        provenance_note: payload.provenance_note,
-        privacy_level: payload.privacy_level,
-        birth_place: payload.birth_place,
-        lived_in: payload.lived_in,
-      };
-      const current = {
-        first_name: existing.firstName,
-        surname: existing.surname,
-        nickname: existing.nickname || null,
-        maiden_name: existing.maidenName || null,
-        alternate_names: existing.alternateNames || [],
-        gender: existing.gender,
-        birth_date: existing.birthDate || null,
-        birth_year: existing.birthYear ? Number(existing.birthYear) : null,
-        birth_approximate: existing.birthApproximate,
-        birth_location: existing.birthLocation,
-        death_date: existing.deathDate || null,
-        death_year: existing.deathYear ? Number(existing.deathYear) : null,
-        death_approximate: existing.deathApproximate,
-        death_location: existing.deathLocation,
-        death_place: existing.deathPlace || null,
-        lived_locations: existing.livedLocations,
-        fact_confidence: existing.factConfidence,
-        provenance_note: existing.provenanceNote || null,
-        privacy_level: existing.privacyLevel,
-        birth_place: existing.birthPlace || null,
-        lived_in: existing.livedLocations?.[0]?.display || existing.legacyLivedIn || null,
-      };
-      const changes = Object.fromEntries(
-        Object.entries(proposed).filter(
-          ([key, value]) =>
-            JSON.stringify(value ?? null) !== JSON.stringify(current[key] ?? null),
-        ),
-      );
-      if (!Object.keys(changes).length) return { suggested: false };
-      const suggestion = await supabase.rpc("suggest_member_correction", {
+      const suggestion = await supabase.rpc("propose_family_correction", {
         p_member_id: existing.id,
-        p_changes: changes,
+        p_expected_revision: existing.revision || 1,
+        p_expected_relationship_hash: existing.relationshipHash,
+        p_details: details,
+        p_connections: connections,
+        p_reason: null,
       });
       if (suggestion.error) throw suggestion.error;
       if (suggestion.data)
@@ -4113,253 +4081,22 @@ function FamilyApp({ session }) {
       : null;
     if (!existing && !relation) throw new Error("Choose a relationship.");
 
-    const relationshipYear = (value, label) => {
-      if (value === "" || value === null || value === undefined) return null;
-      const year = Number(value);
-      if (!Number.isInteger(year) || year < 1800 || year > 2100)
-        throw new Error(`${label} must be a year between 1800 and 2100.`);
-      return year;
-    };
-
-    const createPlaceholderPerson = async (link, ownerId, fallbackLabel) => {
-      const placeholderLabel = link.placeholderLabel?.trim() || fallbackLabel;
-      const placeholderResult = await supabase
-        .from("family_members")
-        .insert({
-          owner_id: ownerId,
-          created_by: session.user.id,
-          first_name: "Unknown",
-          surname: payload.surname || anchorPerson?.surname || "Unknown",
-          gender: link.placeholderGender || "unspecified",
-          is_placeholder: true,
-          placeholder_label: placeholderLabel,
-        })
-        .select()
-        .single();
-      if (placeholderResult.error) throw placeholderResult.error;
-      return placeholderResult.data.id;
-    };
-
-    const resolveContextPersonId = async (link, ownerId, fallbackLabel) => {
-      if (link.mode === "placeholder")
-        return createPlaceholderPerson(link, ownerId, fallbackLabel);
-      return link.personId || "";
-    };
-
-    const syncFamilyConnections = async (memberId, ownerId, replaceExisting = false) => {
-      const currentResult = await supabase
-        .from("relationships")
-        .select("id, owner_id, created_by, person_a_id, person_b_id, relationship_type, relationship_variant, start_year, end_year")
-        .or(`person_a_id.eq.${memberId},person_b_id.eq.${memberId}`);
-      if (currentResult.error) throw currentResult.error;
-      const currentRows = currentResult.data || [];
-
-      const desiredParents = [];
-      const seenParentIds = new Set();
-      for (const link of form.parentLinks || []) {
-        if (link.mode !== "placeholder" && !link.personId) continue;
-        const parentId = await resolveContextPersonId(link, ownerId, `Unknown parent of ${payload.first_name}`);
-        if (!parentId || parentId === memberId || seenParentIds.has(parentId)) continue;
-        seenParentIds.add(parentId);
-        desiredParents.push({ parentId, variant: link.variant || "biological" });
-      }
-
-      const desiredPartners = [];
-      const seenPartnerIds = new Set();
-      for (const link of form.partnerLinks || []) {
-        if (link.mode !== "placeholder" && !link.personId) continue;
-        const partnerId = await resolveContextPersonId(link, ownerId, `Unknown ${link.type === "partner" ? "partner" : "spouse"} of ${payload.first_name}`);
-        if (!partnerId || partnerId === memberId || seenPartnerIds.has(`${link.type}:${partnerId}`)) continue;
-        const startYear = relationshipYear(link.startYear, link.type === "spouse" ? "Marriage year" : "Partnership start year");
-        const endYear = relationshipYear(link.endYear, link.type === "spouse" ? "Divorce / end year" : "Partnership end year");
-        if (startYear && endYear && endYear < startYear)
-          throw new Error("A relationship end year cannot be before its start year.");
-        seenPartnerIds.add(`${link.type}:${partnerId}`);
-        desiredPartners.push({
-          partnerId,
-          type: link.type === "partner" ? "partner" : "spouse",
-          variant: endYear ? "former" : (link.variant || "current"),
-          startYear,
-          endYear,
-          alsoParentOfAnchor: Boolean(link.alsoParentOfAnchor),
-        });
-      }
-
-      const currentParents = currentRows.filter(
-        (row) => row.relationship_type === "parent" && row.person_b_id === memberId,
-      );
-      const currentPartners = currentRows.filter(
-        (row) => ["spouse", "partner"].includes(row.relationship_type),
-      );
-
-      if (replaceExisting) {
-        for (const row of currentParents) {
-          if (!desiredParents.some((item) => item.parentId === row.person_a_id)) {
-            const remove = await supabase.from("relationships").delete().eq("id", row.id);
-            if (remove.error) throw remove.error;
-          }
-        }
-        for (const row of currentPartners) {
-          const otherId = row.person_a_id === memberId ? row.person_b_id : row.person_a_id;
-          if (!desiredPartners.some((item) => item.partnerId === otherId && item.type === row.relationship_type)) {
-            const remove = await supabase.from("relationships").delete().eq("id", row.id);
-            if (remove.error) throw remove.error;
-          }
-        }
-      }
-
-      for (const item of desiredParents) {
-        const current = currentParents.find((row) => row.person_a_id === item.parentId);
-        if (current) {
-          if ((current.relationship_variant || "unspecified") !== item.variant) {
-            const updateResult = await supabase
-              .from("relationships")
-              .update({ relationship_variant: item.variant })
-              .eq("id", current.id);
-            if (updateResult.error) throw updateResult.error;
-          }
-        } else {
-          const insertResult = await supabase.from("relationships").insert({
-            owner_id: ownerId,
-            created_by: session.user.id,
-            person_a_id: item.parentId,
-            person_b_id: memberId,
-            relationship_type: "parent",
-            relationship_variant: item.variant,
-            start_year: null,
-            end_year: null,
-          });
-          if (insertResult.error) throw insertResult.error;
-        }
-      }
-
-      for (const item of desiredPartners) {
-        const current = currentPartners.find((row) => {
-          const otherId = row.person_a_id === memberId ? row.person_b_id : row.person_a_id;
-          return otherId === item.partnerId && row.relationship_type === item.type;
-        });
-        if (current) {
-          const updateResult = await supabase
-            .from("relationships")
-            .update({
-              relationship_variant: item.variant,
-              start_year: item.startYear,
-              end_year: item.endYear,
-            })
-            .eq("id", current.id);
-          if (updateResult.error) throw updateResult.error;
-        } else {
-          const insertResult = await supabase.from("relationships").insert({
-            owner_id: ownerId,
-            created_by: session.user.id,
-            person_a_id: memberId,
-            person_b_id: item.partnerId,
-            relationship_type: item.type,
-            relationship_variant: item.variant,
-            start_year: item.startYear,
-            end_year: item.endYear,
-          });
-          if (insertResult.error) throw insertResult.error;
-        }
-        if (
-          item.alsoParentOfAnchor &&
-          anchorPerson?.id &&
-          anchorPerson.id !== memberId &&
-          item.partnerId !== anchorPerson.id
-        ) {
-          const existingCoParent = relationships.some(
-            (row) => row.type === "parent" && row.from === item.partnerId && row.to === anchorPerson.id,
-          );
-          if (!existingCoParent) {
-            const coParentResult = await supabase.from("relationships").insert({
-              owner_id: ownerId,
-              created_by: session.user.id,
-              person_a_id: item.partnerId,
-              person_b_id: anchorPerson.id,
-              relationship_type: "parent",
-              relationship_variant: "biological",
-            });
-            if (coParentResult.error) throw coParentResult.error;
-          }
-        }
-      }
-    };
-
-    const createRelationshipBundle = async (memberId) => {
-      const selectedParentCount = (form.parentLinks || []).filter(
-        (link) => link.mode === "placeholder" || link.personId,
-      ).length;
-      const rows = [];
-      if (relation.type === "sibling") {
-        const knownParents = parentIdsFor(anchorPerson.id, relationships);
-        if (knownParents.length && !selectedParentCount)
-          throw new Error(
-            "Choose at least one shared parent. One shared parent creates a half-sibling relationship; two or more creates a full-sibling relationship.",
-          );
-        if (!selectedParentCount) {
-          rows.push({
-            owner_id: anchorPerson.ownerId,
-            created_by: session.user.id,
-            person_a_id: memberId,
-            person_b_id: anchorPerson.id,
-            relationship_type: "sibling",
-            relationship_variant: "reported",
-            start_year: null,
-            end_year: null,
-          });
-        }
-      } else {
-        const personAId = relation.direction === "from-anchor" ? anchorPerson.id : memberId;
-        const personBId = relation.direction === "from-anchor" ? memberId : anchorPerson.id;
-        const startYear = ["spouse", "partner"].includes(relation.type)
-          ? relationshipYear(form.marriageYear, relation.type === "spouse" ? "Marriage year" : "Partnership start year")
-          : null;
-        const endYear = ["spouse", "partner"].includes(relation.type)
-          ? relationshipYear(form.relationshipEndYear, relation.type === "spouse" ? "Divorce / end year" : "Partnership end year")
-          : null;
-        if (startYear && endYear && endYear < startYear)
-          throw new Error("A relationship end year cannot be before its start year.");
-        rows.push({
-          owner_id: anchorPerson.ownerId,
-          created_by: session.user.id,
-          person_a_id: personAId,
-          person_b_id: personBId,
-          relationship_type: relation.type,
-          relationship_variant:
-            relation.type === "parent"
-              ? form.parentVariant || "biological"
-              : ["spouse", "partner"].includes(relation.type)
-                ? endYear ? "former" : (form.partnershipVariant || "current")
-                : "unspecified",
-          start_year: startYear,
-          end_year: endYear,
-        });
-      }
-      if (rows.length) {
-        const relationshipResult = await supabase.from("relationships").insert(rows).select();
-        if (relationshipResult.error) throw relationshipResult.error;
-      }
-      await syncFamilyConnections(memberId, anchorPerson.ownerId, false);
-    };
-
     if (existing) {
-      if (existing.isPlaceholder) {
-        payload.is_placeholder = false;
-        payload.placeholder_label = null;
-        payload.filled_by = session.user.id;
-      }
-      const memberResult = await supabase.rpc("update_family_member_with_revision", {
+      if (existing.isPlaceholder) details.fill_placeholder = true;
+      const memberResult = await supabase.rpc("edit_family_member", {
         p_member_id: existing.id,
         p_expected_revision: existing.revision || 1,
-        p_changes: Object.fromEntries(
-          Object.entries(payload).filter(([key]) => key !== "owner_id"),
-        ),
+        p_expected_relationship_hash: existing.relationshipHash,
+        p_details: details,
+        p_connections: connections,
       });
       if (memberResult.error) throw memberResult.error;
-      await syncFamilyConnections(existing.id, existing.ownerId, true);
       await refreshFamilyData();
       return { updated: true };
     }
+
+    const primary = primaryConnectionFromForm(form, relation);
+    const bundle = { primary, ...connections, anchor_id: anchorPerson.id };
 
     if (options.useExistingId) {
       const duplicate = people.find(
@@ -4369,24 +4106,23 @@ function FamilyApp({ session }) {
       );
       if (!duplicate)
         throw new Error("That existing record is no longer available.");
-      await createRelationshipBundle(duplicate.id);
+      const linkResult = await supabase.rpc("link_family_members_bundle", {
+        p_anchor_id: anchorPerson.id,
+        p_member_id: duplicate.id,
+        p_bundle: bundle,
+      });
+      if (linkResult.error) throw linkResult.error;
       await refreshFamilyData();
       return { reused: true };
     }
 
-    const memberResult = await supabase
-      .from("family_members")
-      .insert({ ...payload, created_by: session.user.id })
-      .select()
-      .single();
+    const memberResult = await supabase.rpc("create_family_relative", {
+      p_anchor_id: anchorPerson.id,
+      p_details: details,
+      p_bundle: bundle,
+      p_idempotency_key: crypto.randomUUID(),
+    });
     if (memberResult.error) throw memberResult.error;
-
-    try {
-      await createRelationshipBundle(memberResult.data.id);
-    } catch (relationshipError) {
-      await supabase.from("family_members").delete().eq("id", memberResult.data.id);
-      throw relationshipError;
-    }
 
     await refreshFamilyData();
     return { created: true };
@@ -4554,64 +4290,12 @@ function FamilyApp({ session }) {
     );
     const missingCount = Math.max(0, totalCount - siblingIds.size);
     if (!missingCount) return;
-    const existingPlaceholderCount = [...siblingIds].filter((personId) =>
-      people.some((person) => person.id === personId && person.isPlaceholder),
-    ).length;
-    const rows = Array.from({ length: missingCount }, (_, index) => ({
-      owner_id: anchor.ownerId,
-      created_by: session.user.id,
-      first_name: "Unknown",
-      surname: anchor.surname || "Unknown",
-      gender: "unspecified",
-      is_placeholder: true,
-      placeholder_label: `Unknown sibling ${existingPlaceholderCount + index + 1}`,
-    }));
-    const memberResult = await supabase
-      .from("family_members")
-      .insert(rows)
-      .select();
-    if (memberResult.error) throw memberResult.error;
-    const relationshipResult = await supabase
-      .from("relationships")
-      .insert(
-        memberResult.data.map((member) => ({
-          owner_id: anchor.ownerId,
-          created_by: session.user.id,
-          person_a_id: member.id,
-          person_b_id: anchor.id,
-          relationship_type: "sibling",
-          relationship_variant: "reported",
-        })),
-      )
-      .select();
-    if (relationshipResult.error) {
-      await supabase
-        .from("family_members")
-        .delete()
-        .in(
-          "id",
-          memberResult.data.map((member) => member.id),
-        );
-      throw relationshipResult.error;
-    }
-    setPeople((current) => [
-      ...current,
-      ...memberResult.data.map((row, index) =>
-        personFromRow(row, current.length + index, session.user.id),
-      ),
-    ]);
-    setRelationships((current) => [
-      ...current,
-      ...relationshipResult.data.map((relationship) => ({
-        id: relationship.id,
-        from: relationship.person_a_id,
-        to: relationship.person_b_id,
-        type: relationship.relationship_type,
-        variant: relationship.relationship_variant || "unspecified",
-        startYear: relationship.start_year,
-        endYear: relationship.end_year,
-      })),
-    ]);
+    const result = await supabase.rpc("add_placeholder_siblings", {
+      p_anchor_id: anchor.id,
+      p_desired_total: totalCount,
+    });
+    if (result.error) throw result.error;
+    await refreshFamilyData();
   };
   const linkPeople = async (
     personA,
@@ -4635,11 +4319,7 @@ function FamilyApp({ session }) {
     )
       throw new Error("Enter a valid four-digit relationship year.");
 
-    const base = {
-      owner_id: personA.ownerId,
-      created_by: session.user.id,
-    };
-    const rows = [];
+    const links = [];
 
     if (relation === "sibling") {
       const knownParents = [
@@ -4663,20 +4343,15 @@ function FamilyApp({ session }) {
                 item.to === childId,
             );
             if (!exists)
-              rows.push({
-                ...base,
-                person_a_id: parentId,
-                person_b_id: childId,
-                relationship_type: "parent",
-                relationship_variant:
+              links.push(relationshipRpcArgs(parentId, childId, "parent", {
+                variant:
                   relationships.find(
                     (item) =>
                       item.type === "parent" &&
                       item.from === parentId &&
                       [personA.id, personB.id].includes(item.to),
                   )?.variant || "biological",
-                start_year: null,
-              });
+              }));
           });
         });
       } else {
@@ -4688,14 +4363,7 @@ function FamilyApp({ session }) {
         );
         if (duplicate)
           throw new Error("That sibling relationship is already recorded.");
-        rows.push({
-          ...base,
-          person_a_id: personA.id,
-          person_b_id: personB.id,
-          relationship_type: "sibling",
-          relationship_variant: "reported",
-          start_year: null,
-        });
+        links.push(relationshipRpcArgs(personA.id, personB.id, "sibling", { variant: "reported" }));
       }
     } else {
       const type =
@@ -4713,31 +4381,25 @@ function FamilyApp({ session }) {
       );
       if (duplicate)
         throw new Error("That direct relationship is already recorded.");
-      rows.push({
-        ...base,
-        person_a_id: from,
-        person_b_id: to,
-        relationship_type: type,
-        relationship_variant:
+      links.push(relationshipRpcArgs(from, to, type, {
+        variant:
           type === "parent"
             ? variant || "biological"
-            : ["spouse", "partner"].includes(type)
-              ? variant || "current"
-              : "unspecified",
-        start_year:
-          ["spouse", "partner"].includes(type) && startYear
-            ? Number(startYear)
-            : null,
-      });
+            : type === "sibling" ? variant || "reported" : null,
+        startYear,
+        status: ["spouse", "partner"].includes(type) ? variant || "current" : "unspecified",
+      }));
     }
 
-    if (!rows.length)
+    if (!links.length)
       throw new Error(
         "Those people are already connected through the selected parent relationship.",
       );
 
-    const result = await supabase.from("relationships").insert(rows).select();
-    if (result.error) throw result.error;
+    for (const args of links) {
+      const result = await supabase.rpc("link_family_members", args);
+      if (result.error) throw result.error;
+    }
     await refreshFamilyData();
   };
   const deletePerson = async (person) => {
@@ -4749,10 +4411,9 @@ function FamilyApp({ session }) {
       )
     )
       return;
-    const result = await supabase
-      .from("family_members")
-      .delete()
-      .eq("id", person.id);
+    const result = await supabase.rpc("delete_family_member", {
+      p_member_id: person.id,
+    });
     if (result.error) {
       window.alert(`Could not delete ${person.name}: ${result.error.message}`);
       return;

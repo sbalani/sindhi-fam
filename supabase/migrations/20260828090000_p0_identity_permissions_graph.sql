@@ -197,12 +197,36 @@ create unique index if not exists family_invitation_pending_uidx
 on public.family_invitations(person_id, lower(email))
 where status = 'pending';
 
+-- Some legacy projects created this join table with person_id. Renaming the
+-- column preserves its existing data, primary key, and foreign key definitions.
+do $$
+declare v_access_table regclass:=to_regclass('public.family_invitation_access');
+begin
+  if v_access_table is not null
+    and exists (
+      select 1 from pg_attribute
+      where attrelid = v_access_table
+        and attname = 'person_id' and not attisdropped
+    )
+    and not exists (
+      select 1 from pg_attribute
+      where attrelid = v_access_table
+        and attname = 'member_id' and not attisdropped
+    ) then
+    alter table public.family_invitation_access rename column person_id to member_id;
+  end if;
+end;
+$$;
+
 create table if not exists public.family_invitation_access (
   invitation_id uuid not null references public.family_invitations(id) on delete cascade,
   member_id uuid not null references public.family_members(id) on delete cascade,
   created_at timestamptz not null default now(),
   primary key(invitation_id, member_id)
 );
+
+alter table public.family_invitation_access
+  add column if not exists created_at timestamptz not null default now();
 
 -- Compatibility table for old clients. New UI uses family_connection_requests.
 create table if not exists public.match_decisions (
@@ -229,7 +253,7 @@ create table if not exists public.member_merge_audit (
 -- Permission helpers. Security must be enforced in Postgres, not only React.
 -- ---------------------------------------------------------------------------
 
-create or replace function public.can_access_family_member(p_user_id uuid, p_member_id uuid)
+create or replace function public.can_access_family_member(p_user_id uuid, p_person_id uuid)
 returns boolean
 language sql
 stable
@@ -240,7 +264,7 @@ as $$
   select exists (
     select 1
     from public.family_members fm
-    where fm.id = p_member_id
+    where fm.id = p_person_id
       and (
         fm.owner_id = p_user_id
         or fm.created_by = p_user_id
@@ -888,6 +912,9 @@ $$;
 -- Separate family matching workflow.
 -- ---------------------------------------------------------------------------
 
+-- The v0.14 function returned a different OUT-row shape, which PostgreSQL
+-- cannot replace in place even when there are no table dependencies.
+drop function if exists public.find_family_matches();
 create or replace function public.find_family_matches()
 returns table(candidate_member_id uuid,candidate_owner_id uuid,display_name text,score integer,shared_details text[],birth_year integer,birth_place text,lived_in text)
 language sql
@@ -1370,4 +1397,3 @@ grant select, insert, update, delete on public.relationships to authenticated;
 -- Request/audit tables are intentionally not granted for direct browser CRUD.
 -- Browser clients use the SECURITY DEFINER RPCs above so workflow invariants
 -- cannot be bypassed with raw table calls.
-

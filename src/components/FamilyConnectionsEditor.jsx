@@ -1,16 +1,7 @@
 import { Plus, Trash2, UsersRound } from "lucide-react";
+import { ensureTwoParentRows, makeEmptyParentLink } from "../utils/familyEditing.js";
 
 const PLACEHOLDER = "__placeholder__";
-
-const emptyParent = () => ({
-  key: crypto.randomUUID(),
-  relationshipId: null,
-  mode: "existing",
-  personId: "",
-  variant: "biological",
-  placeholderLabel: "",
-  placeholderGender: "unspecified",
-});
 
 const emptyPartner = () => ({
   key: crypto.randomUUID(),
@@ -21,18 +12,12 @@ const emptyPartner = () => ({
   variant: "current",
   startYear: "",
   endYear: "",
+  confidence: "reported",
+  provenanceNote: "",
   placeholderLabel: "",
   placeholderGender: "unspecified",
   alsoParentOfAnchor: false,
 });
-
-export const ensureTwoParentRows = (links = []) => {
-  const rows = links.map((link) => ({ ...link, key: link.key || crypto.randomUUID() }));
-  while (rows.length < 2) rows.push(emptyParent());
-  return rows;
-};
-
-export const makeEmptyPartner = emptyPartner;
 
 export default function FamilyConnectionsEditor({
   people,
@@ -100,6 +85,29 @@ export default function FamilyConnectionsEditor({
                   <option value="unspecified">Not specified</option>
                 </select>
               </label>
+              <label>
+                Confidence
+                <select
+                  disabled={disabled}
+                  value={link.confidence || "reported"}
+                  onChange={(event) => updateParent(link.key, { confidence: event.target.value })}
+                >
+                  <option value="reported">Reported</option>
+                  <option value="probable">Probable</option>
+                  <option value="uncertain">Uncertain</option>
+                  <option value="documented">Documented</option>
+                  <option value="disputed">Disputed</option>
+                </select>
+              </label>
+              <label>
+                Relationship source <small>Optional</small>
+                <input
+                  disabled={disabled}
+                  value={link.provenanceNote || ""}
+                  onChange={(event) => updateParent(link.key, { provenanceNote: event.target.value })}
+                  placeholder="e.g. family account or certificate"
+                />
+              </label>
               {link.mode === "placeholder" && (
                 <>
                   <label>
@@ -142,7 +150,7 @@ export default function FamilyConnectionsEditor({
           type="button"
           className="quiet family-context-add"
           disabled={disabled}
-          onClick={() => setParentLinks((rows) => [...rows, emptyParent()])}
+          onClick={() => setParentLinks((rows) => [...rows, makeEmptyParentLink()])}
         >
           <Plus size={15} /> Add another parent
         </button>
@@ -223,6 +231,29 @@ export default function FamilyConnectionsEditor({
                   <option value="former">Former</option>
                   <option value="unspecified">Not specified</option>
                 </select>
+              </label>
+              <label>
+                Confidence
+                <select
+                  disabled={disabled}
+                  value={link.confidence || "reported"}
+                  onChange={(event) => updatePartner(link.key, { confidence: event.target.value })}
+                >
+                  <option value="reported">Reported</option>
+                  <option value="probable">Probable</option>
+                  <option value="uncertain">Uncertain</option>
+                  <option value="documented">Documented</option>
+                  <option value="disputed">Disputed</option>
+                </select>
+              </label>
+              <label>
+                Relationship source <small>Optional</small>
+                <input
+                  disabled={disabled}
+                  value={link.provenanceNote || ""}
+                  onChange={(event) => updatePartner(link.key, { provenanceNote: event.target.value })}
+                  placeholder="e.g. family account or certificate"
+                />
               </label>
               {link.mode === "placeholder" && (
                 <>
