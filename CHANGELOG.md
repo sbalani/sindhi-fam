@@ -1,5 +1,17 @@
 # Vansh changelog
 
+## 0.15.1 - Family editing hardening
+
+- Made multi-edge sibling linking one graph-locked, validated, idempotent transaction.
+- Required visibility of both relationship endpoints and management of at least one endpoint.
+- Added identity-first advisory locking and deterministic claimed-identity synchronization across graphs.
+- Aligned unknown-sibling totals with full, half, step and explicitly reported sibling semantics.
+- Preserved confidence and provenance through relative creation, linking and correction proposals.
+- Enabled relationship corrections, rejected no-op proposals, cleared hidden partnership fields, and surfaced snapshot load failures.
+- Added replay contracts for legacy relationship variants and the `can_access_family_member` function signature.
+- Added forward migration `20260920120000_v0151_family_editing_hardening.sql`.
+- Added a guarded compatibility migration for legacy invitation-access helpers.
+
 ## 0.12.0 — P0 trust, identity and graph foundation
 
 This release preserves existing family data and changes how identity, editing and family matching are handled.

@@ -27,12 +27,20 @@ npx supabase functions deploy delete-account
 If the remote migration history is not aligned, do not force or repair old migration history blindly. In Supabase SQL Editor, apply only the missing launch migrations in timestamp order:
 1. `20260830110000_account_persistence_family_updates.sql` if it is not already applied.
 2. `20260914143000_launch_privacy_hardening.sql`.
+3. `20260919090000_add_family_editing_foundation.sql`.
+4. `20260920090000_reconcile_launch_family_editing.sql`.
+5. `20260920110000_harden_launch_api_privileges.sql`.
+6. `20260920120000_v0151_family_editing_hardening.sql`.
+7. `20260920121000_fix_invitation_access_compatibility.sql`.
+
+The editing foundation is a required dependency. Do not skip it when manually
+applying the four forward reconciliation/hardening migrations.
 
 Expected:
 - unit tests pass;
 - ESLint has no errors;
 - Vite production build succeeds;
-- both launch migrations above are applied.
+- every listed launch migration is applied in timestamp order.
 
 Do not commit `node_modules`, `voice_backend/.venv`, `.env`, `dist`, or `supabase/.temp`.
 
@@ -185,3 +193,16 @@ Test desktop + mobile width:
 - account deletion.
 
 Do not launch publicly until the production database migrations and Edge Functions match the code being deployed.
+
+## Local database test limitation
+
+This repository currently has no Docker service or PostgreSQL binaries available
+in its required development environment. `npm test` therefore verifies migration
+ordering and exact schema/RPC contracts, but it is not a substitute for executing
+the full chain. Before deployment, run a Supabase local reset in an environment
+with Docker and execute the diagnostics under `supabase/tests/`.
+
+For v0.15.1, execute `supabase/tests/v0151_family_editing_diagnostic.sql` after
+the complete migration sequence. The script creates required Auth fixtures
+inside its transaction and finishes with `rollback`, so neither Auth nor family
+fixtures persist.

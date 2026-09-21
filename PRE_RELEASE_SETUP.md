@@ -1,4 +1,13 @@
-# Vansh pre-release setup — v0.13.1
+# Vansh pre-release setup - v0.15.1
+
+> **September 20, 2026 v0.15.1 hardening:** apply the complete launch-editing
+> sequence in timestamp order: `20260919090000_add_family_editing_foundation.sql`,
+> `20260920090000_reconcile_launch_family_editing.sql`,
+> `20260920110000_harden_launch_api_privileges.sql`,
+> `20260920120000_v0151_family_editing_hardening.sql`, then
+> `20260920121000_fix_invitation_access_compatibility.sql`. Do not apply only the last
+> migration to a database that is missing the editing foundation. v0.15.1 changes
+> RPC and locking behavior but does not require an Edge Function deployment.
 
 > **September 14, 2026 launch hardening:** also apply
 > `supabase/migrations/20260830110000_account_persistence_family_updates.sql` and
@@ -10,9 +19,18 @@ This release contains code **and** database/Edge Function changes. The browser U
 
 ## 1. Apply database migrations
 
-Apply migrations in timestamp order. If P0 and the original P1/P2 migration are already on the project, the only new migration for this test round is:
+Apply every missing migration in timestamp order. For the launch family-editing
+stack, verify that all five migrations below are recorded, not only the latest
+forward hardening migration:
 
-`supabase/migrations/20260830090000_pre_release_family_context_auth_fixes.sql`
+1. `supabase/migrations/20260919090000_add_family_editing_foundation.sql`
+2. `supabase/migrations/20260920090000_reconcile_launch_family_editing.sql`
+3. `supabase/migrations/20260920110000_harden_launch_api_privileges.sql`
+4. `supabase/migrations/20260920120000_v0151_family_editing_hardening.sql`
+5. `supabase/migrations/20260920121000_fix_invitation_access_compatibility.sql`
+
+Earlier projects may also be missing
+`supabase/migrations/20260830090000_pre_release_family_context_auth_fixes.sql`.
 
 This migration:
 - normalizes all Vansh foreign keys to `auth.users` so deleting an Auth user is not blocked by legacy `NO ACTION` constraints;
@@ -20,6 +38,11 @@ This migration:
 - validates marriage/partnership end years.
 
 After it is applied, test deleting a disposable user in **Supabase Authentication > Users** before testing deletion from inside Vansh.
+
+After the v0.15.1 migration, run
+`supabase/tests/v0151_family_editing_diagnostic.sql` against a disposable test
+database. It creates any required Auth fixture inside its transaction and rolls
+back all fixtures.
 
 ## 2. Deploy the Edge Functions
 

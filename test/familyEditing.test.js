@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   connectionBundleFromForm,
+  correctionSubmissionOutcome,
   primaryConnectionFromForm,
+  correctionPayloadChanged,
+  loadConnectionSnapshots,
+  relationSwitchValues,
   relationshipRpcArgs,
 } from "../src/utils/familyEditing.js";
 
@@ -46,6 +50,39 @@ test("represents placeholders inside the atomic connection bundle", () => {
   });
 });
 
+test("normalizes unspecified parent variants to SQL null in every payload helper", () => {
+  const bundle = connectionBundleFromForm({
+    firstName: "Asha",
+    parentLinks: [{ mode: "existing", personId: "parent", variant: "unspecified" }],
+    partnerLinks: [],
+  });
+  assert.equal(bundle.parents[0].variant, null);
+  assert.equal(
+    primaryConnectionFromForm({ parentVariant: "unspecified" }, { type: "parent", direction: "to-anchor" }).variant,
+    null,
+  );
+  assert.equal(relationshipRpcArgs("parent", "child", "parent", { variant: "unspecified" }).variant, null);
+});
+
+test("excludes a child primary edge duplicated by suggested parent links", () => {
+  const primary = { type: "parent", direction: "from-anchor", variant: "biological" };
+  const bundle = connectionBundleFromForm(
+    {
+      firstName: "Asha",
+      anchorId: "anchor",
+      parentLinks: [
+        { mode: "existing", personId: "anchor", variant: "biological" },
+        { mode: "existing", personId: "co-parent", variant: "biological" },
+      ],
+      partnerLinks: [],
+    },
+    null,
+    [],
+    primary,
+  );
+  assert.deepEqual(bundle.parents.map((parent) => parent.person_id), ["co-parent"]);
+});
+
 test("rejects inconsistent partnership dates before calling the RPC", () => {
   assert.throws(
     () => connectionBundleFromForm({ firstName: "A", parentLinks: [], partnerLinks: [{ mode: "existing", personId: "p", type: "partner", startYear: "2000", endYear: "1999" }] }),
@@ -61,12 +98,52 @@ test("normalizes primary links and single-link RPC arguments", () => {
   assert.equal(primary.status, "former");
   assert.equal(primary.variant, null);
   assert.deepEqual(relationshipRpcArgs("a", "b", "sibling", { variant: "half" }), {
-    p_person_a_id: "a",
-    p_person_b_id: "b",
-    p_relationship_type: "sibling",
-    p_variant: "half",
-    p_start_year: null,
-    p_end_year: null,
-    p_status: "unspecified",
+    person_a_id: "a",
+    person_b_id: "b",
+    relationship_type: "sibling",
+    variant: "half",
+    start_year: null,
+    end_year: null,
+    status: "unspecified",
+    confidence: "reported",
+    provenance_note: null,
   });
+});
+
+test("relation switches clear hidden partnership arguments", () => {
+  assert.deepEqual(relationSwitchValues("parent"), {
+    marriageYear: "",
+    relationshipEndYear: "",
+    partnershipVariant: "unspecified",
+  });
+  assert.equal(relationSwitchValues("spouse").partnershipVariant, "current");
+});
+
+test("correction comparison ignores object key order but detects graph changes", () => {
+  assert.equal(correctionPayloadChanged({ details: { surname: "A", first_name: "B" } }, { details: { first_name: "B", surname: "A" } }), false);
+  assert.equal(correctionPayloadChanged({ connections: { parents: [] } }, { connections: { parents: [{ person_id: "p" }] } }), true);
+});
+
+test("maps a null correction RPC result to an informational no-op", () => {
+  assert.deepEqual(correctionSubmissionOutcome(null), {
+    noChanges: true,
+    message: "No changes to submit.",
+  });
+  assert.deepEqual(correctionSubmissionOutcome("request-id"), {
+    suggested: true,
+    requestId: "request-id",
+  });
+});
+
+test("snapshot loading surfaces RPC errors and maps successful snapshots", async () => {
+  await assert.rejects(
+    loadConnectionSnapshots({ rpc: async () => ({ error: new Error("snapshot failed") }) }, [{ id: "a" }]),
+    /snapshot failed/,
+  );
+  const rows = await loadConnectionSnapshots(
+    { rpc: async () => ({ data: [{ member_id: "a", content_hash: "hash", connections: { parents: [] } }] }) },
+    [{ id: "a", first_name: "A" }],
+  );
+  assert.equal(rows[0]._relationship_hash, "hash");
+  assert.deepEqual(rows[0]._connection_snapshot, { parents: [] });
 });

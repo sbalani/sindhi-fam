@@ -49,8 +49,11 @@ import { matchesAnyField } from "./utils/sindhiSearch.js";
 import { NAME_ALIAS_KINDS } from "./utils/nameAliases.js";
 import {
   connectionBundleFromForm,
+  correctionSubmissionOutcome,
   ensureTwoParentRows,
+  loadConnectionSnapshots,
   primaryConnectionFromForm,
+  relationSwitchValues,
   relationshipRpcArgs,
 } from "./utils/familyEditing.js";
 
@@ -62,7 +65,7 @@ const nav = [
   { id: "matches", label: "Connections", icon: Sparkles },
 ];
 
-const APP_VERSION = "0.15.0";
+const APP_VERSION = "0.15.1";
 
 const RELATION_OPTIONS = [
   {
@@ -175,22 +178,6 @@ const residencePeriod = (location) => {
 
 const residenceLabel = (location) =>
   [location.display, residencePeriod(location)].filter(Boolean).join(" · ");
-
-const withConnectionSnapshots = async (rows) => {
-  if (!rows.length) return rows;
-  const snapshotResult = await supabase.rpc("get_managed_relationship_snapshots", {
-    p_member_ids: rows.map((row) => row.id),
-  });
-  if (snapshotResult.error) throw snapshotResult.error;
-  const snapshots = new Map(
-    (snapshotResult.data || []).map((snapshot) => [snapshot.member_id, snapshot]),
-  );
-  return rows.map((row) => ({
-    ...row,
-    _relationship_hash: snapshots.get(row.id)?.content_hash || null,
-    _connection_snapshot: snapshots.get(row.id)?.connections || null,
-  }));
-};
 
 const personFromRow = (row, index = 0, currentUserId = "") => {
   const isClaimed = Boolean(row.linked_user_id);
@@ -2623,6 +2610,8 @@ function LinkPeopleModal({ people, relationships, close, linkPeople }) {
   const [relation, setRelation] = useState("parent-a");
   const [marriageYear, setMarriageYear] = useState("");
   const [variant, setVariant] = useState("biological");
+  const [confidence, setConfidence] = useState("reported");
+  const [provenanceNote, setProvenanceNote] = useState("");
   const [sharedParentIds, setSharedParentIds] = useState([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -2651,6 +2640,7 @@ function LinkPeopleModal({ people, relationships, close, linkPeople }) {
     const value = event.target.value;
     setRelation(value);
     setSharedParentIds([]);
+    setMarriageYear("");
     setVariant(
       value === "parent-a" || value === "parent-b"
         ? "biological"
@@ -2672,6 +2662,8 @@ function LinkPeopleModal({ people, relationships, close, linkPeople }) {
         marriageYear,
         variant,
         sharedParentIds,
+        confidence,
+        provenanceNote,
       );
       close();
     } catch (linkError) {
@@ -2807,6 +2799,20 @@ function LinkPeopleModal({ people, relationships, close, linkPeople }) {
               </label>
             </>
           )}
+          <label>
+            Confidence
+            <select value={confidence} onChange={(event) => setConfidence(event.target.value)}>
+              <option value="reported">Reported</option>
+              <option value="probable">Probable</option>
+              <option value="uncertain">Uncertain</option>
+              <option value="documented">Documented</option>
+              <option value="disputed">Disputed</option>
+            </select>
+          </label>
+          <label className="wide">
+            Relationship source <small>Optional</small>
+            <input value={provenanceNote} maxLength={1000} onChange={(event) => setProvenanceNote(event.target.value)} />
+          </label>
         </div>
         {relation === "sibling" && !knownParentIds.length && (
           <div className="invite-notice">
@@ -3103,6 +3109,8 @@ function PersonModal({
         mode: "existing",
         personId: item.from,
         variant: item.variant || "biological",
+        confidence: item.confidence || "reported",
+        provenanceNote: item.provenanceNote || "",
       }));
     if (relation?.type === "sibling") return anchorParents;
     if (relation?.type === "parent" && relation?.direction === "from-anchor") {
@@ -3164,9 +3172,12 @@ function PersonModal({
     relationshipEndYear: "",
     parentVariant: "biological",
     partnershipVariant: "current",
+    relationshipConfidence: "reported",
+    relationshipProvenanceNote: "",
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
   const [duplicateCandidates, setDuplicateCandidates] = useState([]);
   const update = (e) => setForm({ ...form, [e.target.name]: e.target.value });
   const addAlternateName = () =>
@@ -3193,6 +3204,7 @@ function PersonModal({
       relation: relation.value,
       gender: relation.gender,
       parentLinks: ensureTwoParentRows(suggestedParentLinks(current.anchorId, relation.value)),
+      ...relationSwitchValues(relation.type),
     }));
   };
   const updateAnchor = (event) => {
@@ -3212,11 +3224,17 @@ function PersonModal({
     if (step === 1) return setStep(2);
     setSaving(true);
     setError("");
+    setMessage("");
     setDuplicateCandidates([]);
     try {
       const result = await savePerson(form, person);
       if (result?.duplicates?.length) {
         setDuplicateCandidates(result.duplicates);
+        setSaving(false);
+        return;
+      }
+      if (result?.noChanges) {
+        setMessage(result.message);
         setSaving(false);
         return;
       }
@@ -3423,6 +3441,33 @@ function PersonModal({
                       </select>
                     </label>
                   )}
+                  <label>
+                    Relationship confidence
+                    <select
+                      value={form.relationshipConfidence}
+                      onChange={(event) => setForm((current) => ({
+                        ...current,
+                        relationshipConfidence: event.target.value,
+                      }))}
+                    >
+                      <option value="reported">Reported</option>
+                      <option value="probable">Probable</option>
+                      <option value="uncertain">Uncertain</option>
+                      <option value="documented">Documented</option>
+                      <option value="disputed">Disputed</option>
+                    </select>
+                  </label>
+                  <label className="wide">
+                    Relationship source <small>Optional</small>
+                    <input
+                      value={form.relationshipProvenanceNote}
+                      maxLength={1000}
+                      onChange={(event) => setForm((current) => ({
+                        ...current,
+                        relationshipProvenanceNote: event.target.value,
+                      }))}
+                    />
+                  </label>
                   {["spouse", "partner"].includes(selectedRelation?.type) && (
                     <label className="wide">
                       Year{" "}
@@ -3496,7 +3541,7 @@ function PersonModal({
                 }))}
                 anchorName={anchorPerson?.firstName || ""}
                 allowAnchorCoParent={!person && selectedRelation?.type === "parent" && selectedRelation?.direction === "to-anchor"}
-                disabled={Boolean(person?.canSuggest)}
+                disabled={false}
               />
             </div>
             {!person && (
@@ -3650,6 +3695,7 @@ function PersonModal({
           </div>
         )}
         {error && <div className="auth-message">{error}</div>}
+        {message && <div className="auth-message">{message}</div>}
         <div className="modal-actions">
           {step === 2 && (
             <button type="button" className="quiet" onClick={() => setStep(1)}>
@@ -3760,7 +3806,15 @@ function FamilyApp({ session }) {
         }
         rows = [...rows, selfResult.data];
       }
-      rows = await withConnectionSnapshots(rows);
+      try {
+        rows = await loadConnectionSnapshots(supabase, rows);
+      } catch (snapshotError) {
+        if (active) {
+          setDataError(snapshotError.message || "Could not load relationship details.");
+          setLoading(false);
+        }
+        return;
+      }
       const [matchResult, identityResult, inboxResult, invitationResult, familyUpdateResult] = await Promise.all([
         supabase.rpc("find_family_matches"),
         supabase.rpc("find_identity_claim_candidates"),
@@ -3826,7 +3880,12 @@ function FamilyApp({ session }) {
       if (!familyUpdateResult.error) setFamilyUpdates(familyUpdateResult.data || []);
       setLoading(false);
     };
-    loadFamily();
+    loadFamily().catch((loadError) => {
+      if (active) {
+        setDataError(loadError.message || "Could not load your family.");
+        setLoading(false);
+      }
+    });
     return () => {
       active = false;
     };
@@ -3920,17 +3979,24 @@ function FamilyApp({ session }) {
   };
 
   const refreshFamilyData = async () => {
-    const [peopleResult, relationshipsResult] = await Promise.all([
-      supabase.from("family_members").select("*").order("created_at"),
-      supabase.from("relationships").select("*").order("created_at"),
-    ]);
-    if (peopleResult.error) throw peopleResult.error;
-    if (relationshipsResult.error) throw relationshipsResult.error;
-    const rows = await withConnectionSnapshots(peopleResult.data);
-    const familyState = familyStateFromRows(rows, relationshipsResult.data, session.user.id);
-    setPeople(familyState.people);
-    setRelationships(familyState.relationships);
-    await refreshTrustData();
+    try {
+      const [peopleResult, relationshipsResult] = await Promise.all([
+        supabase.from("family_members").select("*").order("created_at"),
+        supabase.from("relationships").select("*").order("created_at"),
+      ]);
+      if (peopleResult.error) throw peopleResult.error;
+      if (relationshipsResult.error) throw relationshipsResult.error;
+      const rows = await loadConnectionSnapshots(supabase, peopleResult.data);
+      const familyState = familyStateFromRows(rows, relationshipsResult.data, session.user.id);
+      setPeople(familyState.people);
+      setRelationships(familyState.relationships);
+      setDataError("");
+      await refreshTrustData();
+    } catch (refreshError) {
+      setDataError(refreshError.message || "Could not refresh your family.");
+      setLoading(false);
+      throw refreshError;
+    }
   };
 
   const refreshFamilyDataRef = useRef(null);
@@ -4024,7 +4090,17 @@ function FamilyApp({ session }) {
     const details = Object.fromEntries(
       Object.entries(payload).filter(([key]) => key !== "owner_id"),
     );
-    const connections = connectionBundleFromForm(form, existing, relationships);
+    const relation = !existing
+      ? RELATION_OPTIONS.find((option) => option.value === form.relation)
+      : null;
+    if (!existing && !relation) throw new Error("Choose a relationship.");
+    const primary = relation ? primaryConnectionFromForm(form, relation) : null;
+    const connections = connectionBundleFromForm(
+      form,
+      existing,
+      relationships,
+      primary,
+    );
 
     // Claimed people control their profile and graph connections. Other
     // relatives submit one coherent proposal to the existing launch inbox.
@@ -4038,12 +4114,13 @@ function FamilyApp({ session }) {
         p_reason: null,
       });
       if (suggestion.error) throw suggestion.error;
-      if (suggestion.data)
-        void supabase.functions.invoke("send-request-notification", {
-          body: { kind: "correction", requestId: suggestion.data },
-        });
+      const outcome = correctionSubmissionOutcome(suggestion.data);
+      if (outcome.noChanges) return outcome;
+      void supabase.functions.invoke("send-request-notification", {
+        body: { kind: "correction", requestId: outcome.requestId },
+      });
       await refreshTrustData();
-      return { suggested: true };
+      return outcome;
     }
 
     if (!existing && !options.skipDuplicateCheck) {
@@ -4076,11 +4153,6 @@ function FamilyApp({ session }) {
         };
     }
 
-    const relation = !existing
-      ? RELATION_OPTIONS.find((option) => option.value === form.relation)
-      : null;
-    if (!existing && !relation) throw new Error("Choose a relationship.");
-
     if (existing) {
       if (existing.isPlaceholder) details.fill_placeholder = true;
       const memberResult = await supabase.rpc("edit_family_member", {
@@ -4095,7 +4167,6 @@ function FamilyApp({ session }) {
       return { updated: true };
     }
 
-    const primary = primaryConnectionFromForm(form, relation);
     const bundle = { primary, ...connections, anchor_id: anchorPerson.id };
 
     if (options.useExistingId) {
@@ -4110,6 +4181,7 @@ function FamilyApp({ session }) {
         p_anchor_id: anchorPerson.id,
         p_member_id: duplicate.id,
         p_bundle: bundle,
+        p_idempotency_key: crypto.randomUUID(),
       });
       if (linkResult.error) throw linkResult.error;
       await refreshFamilyData();
@@ -4293,6 +4365,7 @@ function FamilyApp({ session }) {
     const result = await supabase.rpc("add_placeholder_siblings", {
       p_anchor_id: anchor.id,
       p_desired_total: totalCount,
+      p_displayed_sibling_ids: [...siblingIds],
     });
     if (result.error) throw result.error;
     await refreshFamilyData();
@@ -4304,6 +4377,8 @@ function FamilyApp({ session }) {
     startYear = "",
     variant = "unspecified",
     sharedParentIds = [],
+    confidence = "reported",
+    provenanceNote = "",
   ) => {
     if (!personA || !personB || personA.id === personB.id)
       throw new Error("Choose two different people.");
@@ -4351,6 +4426,8 @@ function FamilyApp({ session }) {
                       item.from === parentId &&
                       [personA.id, personB.id].includes(item.to),
                   )?.variant || "biological",
+                confidence,
+                provenanceNote,
               }));
           });
         });
@@ -4363,7 +4440,11 @@ function FamilyApp({ session }) {
         );
         if (duplicate)
           throw new Error("That sibling relationship is already recorded.");
-        links.push(relationshipRpcArgs(personA.id, personB.id, "sibling", { variant: "reported" }));
+        links.push(relationshipRpcArgs(personA.id, personB.id, "sibling", {
+          variant: "reported",
+          confidence,
+          provenanceNote,
+        }));
       }
     } else {
       const type =
@@ -4388,6 +4469,8 @@ function FamilyApp({ session }) {
             : type === "sibling" ? variant || "reported" : null,
         startYear,
         status: ["spouse", "partner"].includes(type) ? variant || "current" : "unspecified",
+        confidence,
+        provenanceNote,
       }));
     }
 
@@ -4396,10 +4479,11 @@ function FamilyApp({ session }) {
         "Those people are already connected through the selected parent relationship.",
       );
 
-    for (const args of links) {
-      const result = await supabase.rpc("link_family_members", args);
-      if (result.error) throw result.error;
-    }
+    const result = await supabase.rpc("link_family_members_batch", {
+      p_links: links,
+      p_idempotency_key: crypto.randomUUID(),
+    });
+    if (result.error) throw result.error;
     await refreshFamilyData();
   };
   const deletePerson = async (person) => {

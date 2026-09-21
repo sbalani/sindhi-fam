@@ -104,6 +104,7 @@ export default function FamilyConnectionsEditor({
                 <input
                   disabled={disabled}
                   value={link.provenanceNote || ""}
+                  maxLength={1000}
                   onChange={(event) => updateParent(link.key, { provenanceNote: event.target.value })}
                   placeholder="e.g. family account or certificate"
                 />
@@ -251,6 +252,7 @@ export default function FamilyConnectionsEditor({
                 <input
                   disabled={disabled}
                   value={link.provenanceNote || ""}
+                  maxLength={1000}
                   onChange={(event) => updatePartner(link.key, { provenanceNote: event.target.value })}
                   placeholder="e.g. family account or certificate"
                 />

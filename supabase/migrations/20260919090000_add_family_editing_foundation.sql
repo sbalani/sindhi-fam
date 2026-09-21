@@ -12,6 +12,14 @@ add column if not exists revision bigint not null default 1,
 add column if not exists end_year integer,
 add column if not exists relationship_status text not null default 'unspecified';
 
+-- Reconcile rows written by historical clients before installing the stricter
+-- constraints below. Partnership state used to live in relationship_variant.
+update public.relationships
+set relationship_status = relationship_variant,
+    relationship_variant = null
+where relationship_type in ('spouse', 'partner')
+  and relationship_variant in ('current', 'former', 'unspecified');
+
 alter table public.relationships
 drop constraint if exists relationships_end_year_check,
 drop constraint if exists relationships_relationship_status_check,
@@ -32,7 +40,7 @@ add constraint relationships_relationship_variant_check check (
   or (relationship_type = 'sibling' and relationship_variant = 'half')
   or (
     relationship_type = 'parent'
-    and relationship_variant in ('biological', 'adoptive', 'guardian')
+    and relationship_variant in ('biological', 'adoptive', 'step', 'guardian')
   )
 );
 

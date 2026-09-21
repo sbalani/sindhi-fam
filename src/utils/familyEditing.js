@@ -38,12 +38,24 @@ const connectionPerson = (link, fallbackLabel) =>
       }
     : { person_id: link.personId };
 
-export function connectionBundleFromForm(form, member, relationships) {
+const relationshipVariant = (type, value) =>
+  type === "parent" && (!value || value === "unspecified") ? null : value || null;
+
+export function connectionBundleFromForm(form, member, relationships, primary = null) {
   const parents = (form.parentLinks || [])
     .filter((link) => link.mode === "placeholder" || link.personId)
+    .filter(
+      (link) =>
+        !(
+          primary?.type === "parent" &&
+          primary.direction === "from-anchor" &&
+          link.mode !== "placeholder" &&
+          link.personId === form.anchorId
+        ),
+    )
     .map((link) => ({
       ...connectionPerson(link, `Unknown parent of ${form.firstName}`),
-      variant: link.variant || "unspecified",
+      variant: relationshipVariant("parent", link.variant),
       confidence: link.confidence || "reported",
       provenance_note: link.provenanceNote?.trim() || null,
     }));
@@ -103,7 +115,7 @@ export function primaryConnectionFromForm(form, relation) {
     direction: relation.direction,
     variant:
       relation.type === "parent"
-        ? form.parentVariant || "unspecified"
+        ? relationshipVariant("parent", form.parentVariant)
         : relation.type === "sibling"
           ? "reported"
           : null,
@@ -114,17 +126,64 @@ export function primaryConnectionFromForm(form, relation) {
         ? "former"
         : form.partnershipVariant || "unspecified"
       : "unspecified",
+    confidence: form.relationshipConfidence || "reported",
+    provenance_note: form.relationshipProvenanceNote?.trim() || null,
   };
 }
 
 export function relationshipRpcArgs(personA, personB, type, options = {}) {
   return {
-    p_person_a_id: personA,
-    p_person_b_id: personB,
-    p_relationship_type: type,
-    p_variant: options.variant || null,
-    p_start_year: options.startYear ? Number(options.startYear) : null,
-    p_end_year: options.endYear ? Number(options.endYear) : null,
-    p_status: options.status || "unspecified",
+    person_a_id: personA,
+    person_b_id: personB,
+    relationship_type: type,
+    variant: relationshipVariant(type, options.variant),
+    start_year: options.startYear ? Number(options.startYear) : null,
+    end_year: options.endYear ? Number(options.endYear) : null,
+    status: options.status || "unspecified",
+    confidence: options.confidence || "reported",
+    provenance_note: options.provenanceNote?.trim() || null,
   };
 }
+
+export const relationSwitchValues = (relation) => ({
+  marriageYear: "",
+  relationshipEndYear: "",
+  partnershipVariant: ["spouse", "partner"].includes(relation)
+    ? "current"
+    : "unspecified",
+});
+
+const canonicalJson = (value) => {
+  if (Array.isArray(value)) return value.map(canonicalJson);
+  if (!value || typeof value !== "object") return value ?? null;
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([, item]) => item !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => [key, canonicalJson(item)]),
+  );
+};
+
+export const correctionPayloadChanged = (current, proposed) =>
+  JSON.stringify(canonicalJson(current)) !== JSON.stringify(canonicalJson(proposed));
+
+export const correctionSubmissionOutcome = (requestId) =>
+  requestId
+    ? { suggested: true, requestId }
+    : { noChanges: true, message: "No changes to submit." };
+
+export const loadConnectionSnapshots = async (client, rows) => {
+  if (!rows.length) return rows;
+  const snapshotResult = await client.rpc("get_managed_relationship_snapshots", {
+    p_member_ids: rows.map((row) => row.id),
+  });
+  if (snapshotResult.error) throw snapshotResult.error;
+  const snapshots = new Map(
+    (snapshotResult.data || []).map((snapshot) => [snapshot.member_id, snapshot]),
+  );
+  return rows.map((row) => ({
+    ...row,
+    _relationship_hash: snapshots.get(row.id)?.content_hash || null,
+    _connection_snapshot: snapshots.get(row.id)?.connections || null,
+  }));
+};

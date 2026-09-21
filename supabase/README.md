@@ -16,10 +16,24 @@ creates the core tables before the historical incremental migrations run.
 `20260828090000_p0_identity_permissions_graph.sql` adds the verification,
 invitation, correction, duplicate/merge and RLS foundation.
 
+The launch-editing sequence is
+`20260919090000_add_family_editing_foundation.sql`,
+`20260920090000_reconcile_launch_family_editing.sql`,
+`20260920110000_harden_launch_api_privileges.sql`,
+`20260920120000_v0151_family_editing_hardening.sql`, then
+`20260920121000_fix_invitation_access_compatibility.sql`. The hardening migration adds
+the atomic link batch, semantic sibling totals, endpoint authorization,
+relationship evidence, and identity-first cross-graph mutation locking. Do not
+apply it to a database that is missing an earlier migration in this sequence.
+The final migration is a guarded no-op on clean schemas without the legacy
+invitation-access helper.
+
 ## P0 trust model
 
 - Invitations, identity claims and family matches are separate workflows.
 - Identity links are never accepted on app load.
+- On invitation acceptance, the accepting account's self record is canonical for
+  person-level fields; graph-relative fields such as `family_side` remain local.
 - A discovery claim is mutual: one party requests and the other explicitly
   accepts.
 - Once a record is claimed, only the linked user may directly change identity

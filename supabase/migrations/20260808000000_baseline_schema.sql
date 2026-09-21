@@ -70,7 +70,7 @@ create index if not exists relationships_b_idx on public.relationships(person_b_
 -- Compatibility helper required by the historical 20260809120645 migration.
 -- The P0 migration later replaces this with the full invitation/identity-aware
 -- access function.
-create or replace function public.can_access_family_member(p_user_id uuid, p_member_id uuid)
+create or replace function public.can_access_family_member(p_user_id uuid, p_person_id uuid)
 returns boolean
 language sql
 stable
@@ -79,7 +79,7 @@ set search_path = ''
 as $$
   select exists (
     select 1 from public.family_members fm
-    where fm.id = p_member_id
+    where fm.id = p_person_id
       and (fm.owner_id = p_user_id or fm.created_by = p_user_id or fm.linked_user_id = p_user_id or fm.filled_by = p_user_id)
   );
 $$;
