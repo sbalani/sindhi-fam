@@ -126,7 +126,7 @@ export const VOICE_RELATION_CHOICES = [
   ['unknown', 'Not sure / choose relation'],
   ['father', 'Father'], ['mother', 'Mother'], ['son', 'Son'], ['daughter', 'Daughter'],
   ['brother', 'Brother'], ['sister', 'Sister'], ['half_brother', 'Half-brother'], ['half_sister', 'Half-sister'],
-  ['stepbrother', 'Stepbrother'], ['stepsister', 'Stepsister'], ['stepfather', 'Stepfather'], ['stepmother', 'Stepmother'],
+  ['stepfather', 'Stepfather'], ['stepmother', 'Stepmother'],
   ['adoptive_father', 'Adoptive father'], ['adoptive_mother', 'Adoptive mother'],
   ['husband', 'Husband'], ['wife', 'Wife'], ['partner', 'Partner'],
   ['maternal_grandfather', 'Maternal grandfather'], ['maternal_grandmother', 'Maternal grandmother'],
@@ -152,8 +152,6 @@ export const relationChoiceForPerson = (person) => {
   if (key && VOICE_RELATION_CHOICES.some(option => option.value === key)) return key
   if (label.includes('half-sister')) return 'half_sister'
   if (label.includes('half-brother')) return 'half_brother'
-  if (label.includes('stepsister')) return 'stepsister'
-  if (label.includes('stepbrother')) return 'stepbrother'
   if (label.includes('stepmother')) return 'stepmother'
   if (label.includes('stepfather')) return 'stepfather'
   if (label.includes('adoptive mother')) return 'adoptive_mother'
@@ -173,22 +171,28 @@ export function overrideDraftRelation(draft, tempId, choice) {
   const target = people.find(person => person.tempId === tempId)
   if (!target || target.isNarrator) return draft
 
-  relationships = relationships.filter(r => r.from !== tempId && r.to !== tempId)
-
-  if (choice === 'unknown') {
-    const updatedPeople = people.map(person => person.tempId === tempId ? {
-      ...person,
-      relationOverride: 'unknown',
-      relationKey: 'unknown',
-      relationToNarrator: 'Relationship not specified',
-      confidence: 1,
-      confidenceBand: 'high',
-      userCorrected: true,
-    } : person)
-    return { ...draft, people: updatedPeople, relationships }
+  const queue = [{ id: tempId, firstEdgeId: null }]
+  const visited = new Set([tempId])
+  let relationPathEdgeId = null
+  while (queue.length && !relationPathEdgeId) {
+    const current = queue.shift()
+    for (const relationship of relationships.filter(r => r.from === current.id || r.to === current.id)) {
+      const nextId = relationship.from === current.id ? relationship.to : relationship.from
+      const firstEdgeId = current.firstEdgeId || relationship.id
+      if (nextId === narratorId) {
+        relationPathEdgeId = firstEdgeId
+        break
+      }
+      if (!visited.has(nextId)) {
+        visited.add(nextId)
+        queue.push({ id: nextId, firstEdgeId })
+      }
+    }
   }
+  if (relationPathEdgeId) relationships = relationships.filter(r => r.id !== relationPathEdgeId)
 
-  // Remove interpreter-only bridge placeholders left behind by the old mapping.
+  // Remove interpreter-only bridge placeholders left behind by the old path,
+  // while preserving unrelated descendants and ancestors of the reviewed person.
   let changed = true
   while (changed) {
     changed = false
@@ -204,6 +208,19 @@ export function overrideDraftRelation(draft, tempId, choice) {
       relationships = relationships.filter(r => !removable.has(r.from) && !removable.has(r.to))
       changed = true
     }
+  }
+
+  if (choice === 'unknown') {
+    const updatedPeople = people.map(person => person.tempId === tempId ? {
+      ...person,
+      relationOverride: 'unknown',
+      relationKey: 'unknown',
+      relationToNarrator: 'Relationship not specified',
+      confidence: 1,
+      confidenceBand: 'high',
+      userCorrected: true,
+    } : person)
+    return { ...draft, people: updatedPeople, relationships }
   }
 
   let seq = 1
@@ -290,7 +307,7 @@ const makeClauseStartRegex = (language) => {
     return new RegExp(`(?:\\bmi\\s+(?:${relationAlt})\\b|\\b(?:el|la)\\s+(?:${relationAlt})\\s+de\\s+mi\\s+(?:${relationAlt})\\b|\\btengo\\s+(?:un|una)\\s+(?:${relationAlt})\\b|\\bsu\\s+(?:${relationAlt})\\b|\\b(?:yo\\s+)?(?:actualmente\\s+)?(?:vivo|estoy\\s+viviendo)\\s+en\\b|\\b(?:yo\\s+)?nac(?:í|i)\\s+en\\b|\\b(?:yo\\s+)?tengo\\s+\\d{1,3}\\s+años\\b)`, 'giu')
   }
   if (language === 'sd') {
-    return new RegExp(`(?:(?:منهنجو|منهنجي|منھنجو|منھنجي|munhjo|munhji|muhnjo|muhnji|my)\\s+(?:${relationAlt})\\b)`, 'giu')
+    return new RegExp(`(?:(?:منهنجو|منهنجي|منھنجو|منھنجي|munhjo|munhji|muhnjo|muhnji|my)\\s+(?:${relationAlt})(?=\\s|$|[,.!?؟،]))`, 'giu')
   }
   return new RegExp(`(?:\\bmy\\s+(?:${relationAlt})\\b|\\bi\\s+have\\s+(?:(?:a|an|the)\\s+)?(?:${relationAlt})\\b|\\b(?:his|her|their)\\s+(?:${relationAlt})\\b|\\bi\\s*(?:'m|am)\\s+(?:currently\\s+)?(?:living|live)\\s+in\\b|\\bi\\s+was\\s+born\\s+in\\b|\\bi\\s*(?:'m|am)\\s+\\d{1,3}\\b)`, 'giu')
 }
@@ -362,7 +379,7 @@ const parseDirectStart = (clause, language) => {
     return key ? { chain: [key], rest: m[2].trim() } : null
   }
   if (language === 'sd') {
-    const m = clause.match(new RegExp(`^(?:منهنجو|منهنجي|منھنجو|منھنجي|munhjo|munhji|muhnjo|muhnji|my)\\s+(${relationAlt})\\b(.*)$`, 'iu'))
+    const m = clause.match(new RegExp(`^(?:منهنجو|منهنجي|منھنجو|منھنجي|munhjo|munhji|muhnjo|muhnji|my)\\s+(${relationAlt})(?=\\s|$|[,.!?؟،])(.*)$`, 'iu'))
     if (!m) return null
     const key = tokenKey(language, m[1])
     return key ? { chain: [key], rest: m[2].trim() } : null

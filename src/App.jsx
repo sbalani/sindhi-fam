@@ -34,7 +34,7 @@ import LocationPicker from "./LocationPicker.jsx";
 import JourneyMap from "./components/JourneyMap.jsx";
 import PersonDetail from "./components/PersonDetail.jsx";
 import Onboarding from "./components/Onboarding.jsx";
-import VoiceEntry from "./components/VoiceEntry.jsx";
+import VoiceFamilyImport from "./VoiceFamilyImport.jsx";
 import ProfilePanel from "./components/ProfilePanel.jsx";
 import SearchResults from "./components/SearchResults.jsx";
 import FamilyConnectionsEditor from "./components/FamilyConnectionsEditor.jsx";
@@ -56,6 +56,7 @@ import {
   relationSwitchValues,
   relationshipRpcArgs,
 } from "./utils/familyEditing.js";
+import { buildVoiceImportPayload } from "./utils/voiceImport.js";
 
 const nav = [
   { id: "home", label: "Overview", icon: LayoutDashboard },
@@ -65,7 +66,7 @@ const nav = [
   { id: "matches", label: "Connections", icon: Sparkles },
 ];
 
-const APP_VERSION = "0.15.1";
+const APP_VERSION = "0.16.0";
 
 const RELATION_OPTIONS = [
   {
@@ -4339,21 +4340,17 @@ function FamilyApp({ session }) {
     await refreshTrustData();
   };
 
-  const acceptVoiceProposal = (proposal) => {
-    const self = people.find((person) => person.isSelf) || people[0];
-    let anchor = self;
-    if (["father", "mother"].includes(proposal.anchorHint)) {
-      const parentIds = parentIdsFor(self?.id, relationships);
-      anchor = people.find((person) => parentIds.includes(person.id) && person.gender === (proposal.anchorHint === "father" ? "male" : "female")) ||
-        people.find((person) => parentIds.includes(person.id)) || self;
-    }
-    setVoiceDraft({
-      ...proposal,
-      anchorId: anchor?.id,
-      surname: proposal.surname || anchor?.surname || self?.surname || "",
+  const importVoiceFamily = async (draft) => {
+    const payload = buildVoiceImportPayload(draft);
+    const result = await supabase.rpc("import_voice_family_story", {
+      p_narrator_id: payload.narratorId,
+      p_people: payload.people,
+      p_relationships: payload.relationships,
+      p_idempotency_key: payload.idempotencyKey,
     });
-    setAdding(anchor);
-    setShowVoice(false);
+    if (result.error) throw result.error;
+    await refreshFamilyData();
+    return result.data;
   };
 
   const addPlaceholders = async (anchor, totalCount) => {
@@ -4717,7 +4714,13 @@ function FamilyApp({ session }) {
         />
       )}
       {showVoice && (
-        <VoiceEntry close={() => setShowVoice(false)} onProposal={acceptVoiceProposal} />
+        <VoiceFamilyImport
+          people={people}
+          relationships={relationships}
+          onCommit={importVoiceFamily}
+          onOpenTree={() => { setShowVoice(false); navigate("tree"); }}
+          onClose={() => setShowVoice(false)}
+        />
       )}
       {showProfile && (
         <ProfilePanel

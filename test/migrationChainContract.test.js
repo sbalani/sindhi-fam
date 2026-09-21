@@ -26,6 +26,14 @@ const invitationAccessCompatibility = readFileSync(
   new URL("../supabase/migrations/20260920121000_fix_invitation_access_compatibility.sql", import.meta.url),
   "utf8",
 );
+const voiceImport = readFileSync(
+  new URL("../supabase/migrations/20260921110236_add_voice_family_import.sql", import.meta.url),
+  "utf8",
+);
+const voiceImportHardening = readFileSync(
+  new URL("../supabase/migrations/20260921111409_harden_voice_family_import.sql", import.meta.url),
+  "utf8",
+);
 
 test("generated live-schema diff is reduced to safe schema normalization", () => {
   assert.match(historicalMarker, /Historical live-schema reconciliation marker/);
@@ -101,7 +109,23 @@ test("migration filenames have unique sortable timestamps", () => {
   assert.ok(names.every((name) => /^\d{14}_[a-z0-9_]+\.sql$/.test(name)));
   const timestamps = names.map((name) => name.slice(0, 14)).toSorted();
   assert.equal(new Set(timestamps).size, timestamps.length);
-  assert.equal(timestamps.at(-1), "20260920121000");
+  assert.equal(timestamps.at(-1), "20260921111409");
+});
+
+test("voice family import is atomic, graph-locked, idempotent, and RPC-only", () => {
+  assert.match(voiceImport, /function public\.import_voice_family_story\(/i);
+  assert.match(voiceImport, /perform private\.lock_family_graph\(v_owner\)/i);
+  assert.match(voiceImport, /operation='import_voice_family_story'/i);
+  assert.match(voiceImport, /perform public\.link_family_members_batch\(v_links,v_link_key\)/i);
+  assert.match(voiceImport, /private\.can_manage_member\(auth\.uid\(\),v_narrator\)/i);
+  assert.match(voiceImport, /private\.can_view_member\(auth\.uid\(\),member\)/i);
+  assert.match(voiceImport, /revoke all on function public\.import_voice_family_story\(uuid,jsonb,jsonb,uuid\) from public,anon/i);
+  assert.match(voiceImport, /grant execute on function public\.import_voice_family_story\(uuid,jsonb,jsonb,uuid\) to authenticated/i);
+  assert.match(voiceImportHardening, /set schema private/i);
+  assert.match(voiceImportHardening, /revoke all on function private\.import_voice_family_story_unchecked\(uuid,jsonb,jsonb,uuid\) from public,anon,authenticated/i);
+  assert.match(voiceImportHardening, /char_length[\s\S]*> 100/i);
+  assert.match(voiceImportHardening, /gender','unspecified'\) not in \('female','male','nonbinary','unspecified'\)/i);
+  assert.match(voiceImportHardening, /birth_year[\s\S]*not between 1800 and extract\(year from current_date\)/i);
 });
 
 test("can_access_family_member keeps one parameter contract through P0 replacement", () => {

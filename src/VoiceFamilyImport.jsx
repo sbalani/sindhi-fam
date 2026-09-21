@@ -1,10 +1,11 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertTriangle, ArrowLeft, ArrowRight, Check, CheckCircle2, CircleHelp,
   FileAudio, Languages, LoaderCircle, Mic, Network, Play, RotateCcw,
   Sparkles, Square, Upload, UserRound, WandSparkles, XCircle,
 } from 'lucide-react'
 import { draftPersonName, interpretFamilyStory, overrideDraftRelation, relationChoiceForPerson, VOICE_LANGUAGES, VOICE_RELATION_CHOICES } from './familyInterpreter.js'
+import useDialogAccessibility from './hooks/useDialogAccessibility.js'
 
 const TEXT = {
   en: {
@@ -19,7 +20,7 @@ const TEXT = {
     confirm: 'Confirm', reject: 'Reject mapping', unknown: 'Keep as unknown relative', summary: 'Review complete',
     summaryText: 'Only confirmed people and connections will be added to the real family tree.', add: 'Add confirmed people to family tree',
     done: 'Family story added', doneText: 'The confirmed interpretation is now part of your Vansh family map.', open: 'Open family map', another: 'Interpret another story',
-    safe: 'Nothing is saved until you confirm it.', service: 'For recorded audio, start the included local Whisper service. Chrome live transcription can work without it.',
+    safe: 'Nothing is saved until you confirm it.', service: 'Live transcription depends on browser support. Uploaded-audio transcription is available only in local development.',
   },
   es: {
     eyebrow: 'IMPORTACIÓN POR VOZ', title: 'Cuéntale a Vansh la historia de tu familia',
@@ -33,7 +34,7 @@ const TEXT = {
     confirm: 'Confirmar', reject: 'Rechazar relación', unknown: 'Mantener como familiar desconocido', summary: 'Revisión completada',
     summaryText: 'Solo se añadirán las personas y conexiones confirmadas.', add: 'Añadir confirmados al árbol',
     done: 'Historia familiar añadida', doneText: 'La interpretación confirmada ya forma parte del mapa familiar.', open: 'Abrir mapa familiar', another: 'Interpretar otra historia',
-    safe: 'No se guarda nada hasta que lo confirmes.', service: 'Para audio grabado, inicia el servicio local Whisper incluido. La transcripción en vivo de Chrome puede funcionar sin él.',
+    safe: 'No se guarda nada hasta que lo confirmes.', service: 'La transcripción en vivo depende del navegador. El audio subido solo se transcribe en desarrollo local.',
   },
   sd: {
     eyebrow: 'آواز سان خانداني معلومات', title: 'Vansh کي پنهنجي خاندان جي ڪهاڻي ٻڌايو',
@@ -47,7 +48,7 @@ const TEXT = {
     confirm: 'تصديق ڪريو', reject: 'هن نقشبندي کي رد ڪريو', unknown: 'اڻڄاتل مائٽ طور رکو', summary: 'چڪاس مڪمل',
     summaryText: 'صرف تصديق ٿيل ماڻهو ۽ لاڳاپا اصل وڻ ۾ شامل ٿيندا.', add: 'تصديق ٿيل ماڻهو وڻ ۾ شامل ڪريو',
     done: 'خانداني ڪهاڻي شامل ٿي وئي', doneText: 'تصديق ٿيل تشريح هاڻي Vansh جي خانداني نقشي جو حصو آهي.', open: 'خانداني نقشو کوليو', another: 'ٻي ڪهاڻي شامل ڪريو',
-    safe: 'تصديق کان اڳ ڪجھ به محفوظ نه ٿيندو.', service: 'رڪارڊ ٿيل آڊيو لاءِ شامل ڪيل مقامي Whisper سروس هلائيو.',
+    safe: 'تصديق کان اڳ ڪجھ به محفوظ نه ٿيندو.', service: 'لائيو ٽرانسڪرپشن برائوزر جي سهڪار تي دارومدار رکي ٿي.',
   },
 }
 
@@ -56,7 +57,8 @@ const SAMPLES = {
   es: 'Mi padre se llama Carlos Nanwani y tiene 55 años y vive en Madrid. Mi madre se llama Anita Nanwani y tiene 52 años. El hermano de mi madre se llama Vijay Nanwani.',
   sd: 'منهنجو بابا Rajesh Nanwani آهي. منهنجي اما Anita Nanwani آهي. منهنجو ڀاءُ Rohit Nanwani آهي.',
 }
-const VOICE_API = import.meta.env.VITE_VOICE_API_URL || 'http://127.0.0.1:8001'
+const VOICE_API = import.meta.env.DEV ? (import.meta.env.VITE_VOICE_API_URL || 'http://127.0.0.1:8001') : ''
+const MAX_AUDIO_BYTES = 25 * 1024 * 1024
 
 const confidenceText = (copy, band) => band === 'high' ? copy.high : band === 'medium' ? copy.medium : copy.low
 
@@ -98,10 +100,11 @@ function RoughTree({ draft, copy, onSelect }) {
   </div>
 }
 
-export default function VoiceFamilyImport({ people, relationships, onCommit, onOpenTree }) {
+export default function VoiceFamilyImport({ people, relationships, onCommit, onOpenTree, onClose }) {
+  const dialogRef = useDialogAccessibility(onClose)
   const [language, setLanguage] = useState('en')
   const copy = TEXT[language]
-  const [narratorId, setNarratorId] = useState(people.find(p => p.isSelf)?.id || people[0]?.id || '')
+  const [narratorId, setNarratorId] = useState(people.find(p => p.isSelf || p.canEdit)?.id || '')
   const [step, setStep] = useState('capture')
   const [transcript, setTranscript] = useState('')
   const [recording, setRecording] = useState(false)
@@ -112,17 +115,32 @@ export default function VoiceFamilyImport({ people, relationships, onCommit, onO
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const recorderRef = useRef(null), streamRef = useRef(null), recognitionRef = useRef(null), fileRef = useRef(null)
+  const audioUrlRef = useRef('')
   const SpeechRecognition = typeof window !== 'undefined' ? window.SpeechRecognition || window.webkitSpeechRecognition : null
-  const narrator = people.find(p => p.id === narratorId) || people[0]
+  const narratorChoices = people.filter(person => person.canEdit || person.isSelf)
+  const narrator = narratorChoices.find(p => p.id === narratorId) || narratorChoices[0]
+
+  useEffect(() => () => {
+    recognitionRef.current?.stop?.()
+    if (recorderRef.current?.state && recorderRef.current.state !== 'inactive') {
+      recorderRef.current.onstop = null
+      recorderRef.current.stop()
+    }
+    streamRef.current?.getTracks().forEach(track => track.stop())
+    if (audioUrlRef.current) URL.revokeObjectURL(audioUrlRef.current)
+  }, [])
 
   const applyAudioBlob = blob => {
-    if (audioUrl) URL.revokeObjectURL(audioUrl)
-    setAudioBlob(blob); setAudioUrl(blob ? URL.createObjectURL(blob) : '')
+    if (audioUrlRef.current) URL.revokeObjectURL(audioUrlRef.current)
+    const nextUrl = blob ? URL.createObjectURL(blob) : ''
+    audioUrlRef.current = nextUrl
+    setAudioBlob(blob); setAudioUrl(nextUrl)
   }
 
   const startRecording = async () => {
     setError('')
     try {
+      if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') throw new Error('Audio recording is not available in this browser. Upload audio or type the story instead.')
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true }); streamRef.current = stream
       const recorder = new MediaRecorder(stream); recorderRef.current = recorder; const chunks = []
       recorder.ondataavailable = e => e.data?.size && chunks.push(e.data)
@@ -144,14 +162,15 @@ export default function VoiceFamilyImport({ people, relationships, onCommit, onO
   const transcribe = async () => {
     if (!audioBlob) return; setBusy(true); setError('')
     try {
+      if (!VOICE_API) throw new Error('Recorded-audio transcription is not configured. Use live transcription or edit the transcript manually.')
       const form = new FormData(); form.append('file', audioBlob, audioBlob.name || `family-story-${Date.now()}.webm`); form.append('language', language)
       const response = await fetch(`${VOICE_API}/transcribe`, { method: 'POST', body: form }); const data = await response.json().catch(() => ({}))
       if (!response.ok) throw new Error(data.detail || 'Transcription failed.'); setTranscript(data.text || '')
-    } catch (e) { setError(`${e.message} Start voice_backend/2 - START VOICE BACKEND.bat, or edit the transcript manually.`) } finally { setBusy(false) }
+    } catch (e) { setError(e.message || 'Transcription failed. You can edit the transcript manually.') } finally { setBusy(false) }
   }
   const interpret = () => {
     if (!transcript.trim() || !narrator) return
-    const result = interpretFamilyStory({ transcript, language, narrator, people, relationships }); setDraft(result); setReviewIndex(0); setStep('preview')
+    const result = interpretFamilyStory({ transcript, language, narrator, people, relationships }); setDraft({ ...result, importId: crypto.randomUUID() }); setReviewIndex(0); setStep('preview')
   }
   const reviewPeople = useMemo(() => draft?.people.filter(p => !p.isNarrator) || [], [draft])
   const current = reviewPeople[reviewIndex], reviewDone = Boolean(draft) && reviewIndex >= reviewPeople.length
@@ -163,20 +182,30 @@ export default function VoiceFamilyImport({ people, relationships, onCommit, onO
   const selectNode = id => { const i = reviewPeople.findIndex(p => p.tempId === id); if (i >= 0) { setReviewIndex(i); setStep('review') } }
   const commit = async () => { setBusy(true); setError(''); try { await onCommit(draft); setStep('done') } catch (e) { setError(e.message || 'Could not save the confirmed interpretation.') } finally { setBusy(false) } }
   const reset = () => { setStep('capture'); setTranscript(''); setDraft(null); setReviewIndex(0); setError(''); applyAudioBlob(null) }
+  const chooseAudio = file => {
+    setError('')
+    if (!file?.type?.startsWith('audio/')) return setError('Choose an audio file.')
+    if (file.size > MAX_AUDIO_BYTES) return setError('Audio files must be 25 MB or smaller.')
+    applyAudioBlob(file)
+  }
 
-  return <div className="page inner-page voice-page" dir={language === 'sd' ? 'rtl' : 'ltr'}>
+  return <div className="modal-wrap voice-import-wrap">
+    <button type="button" className="modal-scrim" onClick={onClose} aria-label="Close voice family import" />
+    <div ref={dialogRef} className="voice-import-modal" role="dialog" aria-modal="true" aria-label="Voice family import" tabIndex={-1}>
+    <button type="button" className="modal-close" onClick={onClose} aria-label="Close"><XCircle /></button>
+    <div className="voice-page" dir={language === 'sd' ? 'rtl' : 'ltr'}>
     {step === 'capture' && <>
       <div className="section-heading voice-heading"><div><span className="eyebrow">{copy.eyebrow}</span><h1>{copy.title}</h1><p>{copy.subtitle}</p></div><div className="voice-safe"><Sparkles size={16}/>{copy.safe}</div></div>
       <div className="voice-grid">
         <section className="panel voice-record-panel">
           <div className="voice-config">
             <label><span><Languages size={14}/>{copy.language}</span><select value={language} onChange={e => setLanguage(e.target.value)}>{Object.entries(VOICE_LANGUAGES).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}</select></label>
-            <label><span><UserRound size={14}/>{copy.narrator}</span><select value={narratorId} onChange={e => setNarratorId(e.target.value)}>{people.map(p => <option value={p.id} key={p.id}>{p.name}{p.isSelf ? ' (you)' : ''}</option>)}</select></label>
+            <label><span><UserRound size={14}/>{copy.narrator}</span><select value={narratorId} onChange={e => setNarratorId(e.target.value)}>{narratorChoices.map(p => <option value={p.id} key={p.id}>{p.name}{p.isSelf ? ' (you)' : ''}</option>)}</select></label>
           </div>
           <div className={`voice-recorder ${recording ? 'recording' : ''}`}><div className="voice-mic">{recording ? <Square/> : <Mic/>}</div><div><strong>{recording ? copy.stop : copy.start}</strong><span>{VOICE_LANGUAGES[language].label}</span></div><button className={recording ? 'danger-button' : 'primary'} onClick={recording ? stopRecording : startRecording}>{recording ? <><Square size={14}/>{copy.stop}</> : <><Mic size={15}/>{copy.start}</>}</button></div>
-          <div className="voice-audio-row"><input ref={fileRef} hidden type="file" accept="audio/*" onChange={e => e.target.files?.[0] && applyAudioBlob(e.target.files[0])}/><button className="secondary" onClick={() => fileRef.current?.click()}><Upload size={15}/>{copy.upload}</button>{audioUrl && <audio controls src={audioUrl}/>}</div>
+          <div className="voice-audio-row"><input ref={fileRef} hidden type="file" accept="audio/*" onChange={e => chooseAudio(e.target.files?.[0])}/><button type="button" className="secondary" onClick={() => fileRef.current?.click()}><Upload size={15}/>{copy.upload}</button>{audioUrl && <audio controls src={audioUrl}/>}</div>
           <p className="voice-service-note"><FileAudio size={14}/>{copy.service}</p>
-          {audioBlob && <button className="voice-transcribe" onClick={transcribe} disabled={busy}>{busy ? <LoaderCircle className="spin" size={15}/> : <FileAudio size={15}/>} {copy.transcribe}</button>}
+          {audioBlob && VOICE_API && <button className="voice-transcribe" onClick={transcribe} disabled={busy}>{busy ? <LoaderCircle className="spin" size={15}/> : <FileAudio size={15}/>} {copy.transcribe}</button>}
         </section>
         <section className="panel voice-transcript-panel"><div className="panel-title"><div><span className="mini-title">{copy.transcript}</span><h2>{copy.transcript}</h2><p>{copy.transcriptHelp}</p></div><button className="text-button" onClick={() => setTranscript(SAMPLES[language])}><Play size={13}/>{copy.sample}</button></div><textarea className="voice-transcript" value={transcript} onChange={e => setTranscript(e.target.value)} placeholder={language === 'es' ? 'Mi padre se llama Carlos…' : language === 'sd' ? 'منهنجو بابا Rajesh Nanwani آهي…' : 'My father is Rajesh…'}/><div className="voice-footer"><span>{transcript.trim().split(/\s+/).filter(Boolean).length} words</span><button className="primary" onClick={interpret} disabled={!transcript.trim()}><WandSparkles size={16}/>{copy.interpret}</button></div></section>
       </div>
@@ -192,22 +221,25 @@ export default function VoiceFamilyImport({ people, relationships, onCommit, onO
     {step === 'review' && draft && <>
       <div className="section-heading voice-heading"><div><span className="eyebrow">CONFIRM ONE BY ONE</span><h1>{copy.reviewTitle}</h1><p>{Math.min(reviewIndex + 1, reviewPeople.length)} / {reviewPeople.length}</p></div></div>
       {!reviewDone && current ? <section className="panel voice-review-card">
-        <div className="voice-review-head"><div className={`voice-person-icon ${current.confidenceBand}`}><UserRound/></div><div><span>{confidenceText(copy, current.confidenceBand)}</span><h2>{draftPersonName(current)}</h2><p>{current.relationToNarrator}</p></div></div>
+        <div className="voice-review-head"><div className={`voice-person-icon ${current.confidenceBand}`}><UserRound/></div><div><span>{confidenceText(copy, current.confidenceBand)}{current.existingId ? ' · Existing family record' : ''}</span><h2>{draftPersonName(current)}</h2><p>{current.relationToNarrator}</p></div></div>
         <div className="voice-review-form">
           <label className="wide">{copy.relation}<select className="voice-relation-select" value={relationChoiceForPerson(current)} onChange={e => setDraft(d => overrideDraftRelation(d, current.tempId, e.target.value))}>{VOICE_RELATION_CHOICES.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select><small className="voice-field-help">{copy.relationHelp}</small></label>
-          <label>{copy.name}<input value={current.isPlaceholder ? '' : [current.firstName,current.surname].filter(Boolean).join(' ')} placeholder={current.placeholderLabel || 'Unknown relative'} onChange={e => { const parts=e.target.value.trim().split(/\s+/).filter(Boolean); patchPerson({ firstName: parts.length>1?parts.slice(0,-1).join(' '):(parts[0]||'Unknown'), surname: parts.length>1?parts.at(-1):(current.surname||narrator.surname||'Unknown'), isPlaceholder: !e.target.value.trim() }) }}/></label>
-          <label>{copy.age}<input inputMode="numeric" value={current.age || ''} onChange={e => patchPerson({ age: e.target.value ? Number(e.target.value) : null })}/></label>
-          <label>{copy.location}<input value={current.location || ''} onChange={e => patchPerson({ location: e.target.value })}/></label>
-          <label>{copy.birth}<input value={current.birthLocation || ''} onChange={e => patchPerson({ birthLocation: e.target.value })}/></label>
+          <label>{copy.name}<input disabled={Boolean(current.existingId)} value={current.isPlaceholder ? '' : [current.firstName,current.surname].filter(Boolean).join(' ')} placeholder={current.placeholderLabel || 'Unknown relative'} onChange={e => { const parts=e.target.value.trim().split(/\s+/).filter(Boolean); patchPerson({ firstName: parts.length>1?parts.slice(0,-1).join(' '):(parts[0]||'Unknown'), surname: parts.length>1?parts.at(-1):(current.surname||narrator.surname||'Unknown'), isPlaceholder: !e.target.value.trim() }) }}/></label>
+          <label>{copy.age}<input disabled={Boolean(current.existingId)} type="number" min="0" max="125" inputMode="numeric" value={current.age || ''} onChange={e => patchPerson({ age: e.target.value ? Number(e.target.value) : null })}/></label>
+          <label>{copy.location}<input disabled={Boolean(current.existingId)} value={current.location || ''} onChange={e => patchPerson({ location: e.target.value })}/><small className="voice-field-help">Saved as a text clue. Use Family Journey to map exact coordinates.</small></label>
+          <label>{copy.birth}<input disabled={Boolean(current.existingId)} value={current.birthLocation || ''} onChange={e => patchPerson({ birthLocation: e.target.value })}/></label>
+          {current.existingId && <small className="voice-existing-note">Existing profile facts are shown for context and will not be overwritten by this import.</small>}
         </div>
         <div className="voice-evidence"><CircleHelp size={16}/><div><strong>{copy.evidence}</strong><p>“{current.evidence}”</p></div></div>
-        <div className="voice-review-actions"><button className="reject-button" onClick={() => decide('rejected')}><XCircle size={16}/>{copy.reject}</button><button className="primary" onClick={() => decide('confirmed')}><Check size={16}/>{current.isPlaceholder ? copy.unknown : copy.confirm}</button></div>
+        <div className="voice-review-actions"><button className="reject-button" onClick={() => decide('rejected')}><XCircle size={16}/>{copy.reject}</button><button className="primary" disabled={relationChoiceForPerson(current) === 'unknown'} onClick={() => decide('confirmed')}><Check size={16}/>{copy.confirm}</button></div>
       </section> : <section className="panel voice-summary"><CheckCircle2 size={34}/><h2>{copy.summary}</h2><p>{copy.summaryText}</p><div className="voice-summary-counts"><span><strong>{draft.people.filter(p => !p.isNarrator && p.status === 'confirmed').length}</strong> confirmed</span><span><strong>{draft.people.filter(p => p.status === 'rejected').length}</strong> rejected</span><span><strong>{draft.relationships.filter(r => r.status === 'confirmed').length}</strong> connections</span></div><RoughTree draft={draft} copy={copy}/><button className="primary voice-commit" onClick={commit} disabled={busy}>{busy ? <LoaderCircle className="spin" size={16}/> : <CheckCircle2 size={16}/>} {copy.add}</button></section>}
       <div className="voice-actions"><button className="quiet" onClick={() => setStep('preview')}><ArrowLeft size={15}/>{copy.rough}</button>{!reviewDone && reviewIndex > 0 && <button className="quiet" onClick={() => setReviewIndex(i => i - 1)}><ArrowLeft size={15}/>Previous</button>}</div>
     </>}
 
     {step === 'done' && <section className="panel voice-done"><div className="voice-done-icon"><CheckCircle2 size={40}/></div><h1>{copy.done}</h1><p>{copy.doneText}</p><div><button className="secondary" onClick={reset}><RotateCcw size={15}/>{copy.another}</button><button className="primary" onClick={onOpenTree}><Network size={16}/>{copy.open}</button></div></section>}
 
-    {error && <div className="voice-error"><AlertTriangle size={17}/><span>{error}</span></div>}
+    {error && <div className="voice-error" role="alert"><AlertTriangle size={17}/><span>{error}</span></div>}
+    </div>
+    </div>
   </div>
 }

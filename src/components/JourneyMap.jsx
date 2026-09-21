@@ -1,9 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { MapPin, Route, UsersRound } from "lucide-react";
+import { CalendarDays, MapPin, Route, UsersRound } from "lucide-react";
 import { deriveGenerationLevels } from "../utils/kinship.js";
 
 const LEAFLET_JS = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
 const LEAFLET_CSS = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
+const ROUTE_COLORS = ["#1f6b5b", "#b56f3e", "#6c5b8f", "#39718a", "#9a5360", "#84702f", "#4e6d44"];
+
+const colorFor = (value) => {
+  const hash = [...String(value || "family")].reduce((total, character) => ((total * 31) + character.codePointAt(0)) >>> 0, 0);
+  return ROUTE_COLORS[hash % ROUTE_COLORS.length];
+};
 
 const coordinatesFor = (location) => {
   const lat = Number(location?.lat ?? location?.latitude);
@@ -102,16 +108,28 @@ export default function JourneyMap({ people, relationships = [], branchFor, open
       const points = locations
         .map((location) => ({ location, coordinates: coordinatesFor(location) }))
         .filter((item) => item.coordinates);
-      return { person, points };
+      return { person, points, color: colorFor(`${branchFor(person)}:${person.surname}`) };
     })
     .filter((journey) => journey.points.length);
 
   const placeCount = new Set(
     journeys.flatMap((journey) => journey.points.map(({ location }) => location.providerId || location.display)),
   ).size;
+  const chronology = journeys
+    .flatMap(({ person, points, color }) => points.map(({ location }) => {
+      const rawYear = location.kind === "Birthplace" ? person.birthYear : location.startYear;
+      if (rawYear === "" || rawYear === null || rawYear === undefined) return null;
+      const year = Number(rawYear);
+      if (!Number.isInteger(year)) return null;
+      return { person, location, year, color };
+    }))
+    .filter(Boolean)
+    .sort((left, right) => left.year - right.year || left.person.name.localeCompare(right.person.name));
+  const chronologySpan = chronology.length > 1 ? `${chronology[0].year}–${chronology.at(-1).year}` : chronology[0]?.year;
   const journeySignature = JSON.stringify(
-    journeys.map(({ person, points }) => [
+    journeys.map(({ person, points, color }) => [
       person.id,
+      color,
       points.map(({ location, coordinates }) => [location.providerId || location.display, coordinates, location.startYear, location.endYear]),
     ]),
   );
@@ -140,21 +158,24 @@ export default function JourneyMap({ people, relationships = [], branchFor, open
         }).addTo(map);
 
         const bounds = [];
-        journeys.forEach(({ person, points }) => {
+        journeys.forEach(({ person, points, color }) => {
           const line = points.map(({ coordinates }) => coordinates);
           if (line.length > 1) {
             L.polyline(line, {
               weight: 3,
               opacity: 0.78,
               dashArray: "7 7",
+              color,
             }).addTo(map);
           }
-          points.forEach(({ location, coordinates }, index) => {
+          points.forEach(({ location, coordinates }) => {
             bounds.push(coordinates);
             const marker = L.circleMarker(coordinates, {
-              radius: index === 0 ? 7 : 6,
+              radius: location.kind === "Birthplace" ? 7 : 6,
               weight: 2,
               fillOpacity: 0.92,
+              color: "#ffffff",
+              fillColor: color,
             }).addTo(map);
             const tooltip = document.createElement("span");
             tooltip.textContent = `${person.name} — ${location.kind}: ${location.display}`;
@@ -274,25 +295,25 @@ export default function JourneyMap({ people, relationships = [], branchFor, open
               <img className="journey-world" src="/world-outline.svg" alt="World map outline" />
               <div className="journey-grid" />
               <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
-                {journeys.flatMap(({ person, points }) =>
+                {journeys.flatMap(({ person, points, color }) =>
                   points.slice(1).map((item, index) => {
                     const previous = points[index];
                     const a = pointForFallback(previous.location);
                     const b = pointForFallback(item.location);
                     if (!a || !b) return null;
-                    return <line key={`${person.id}-${index}`} x1={a.x} y1={a.y} x2={b.x} y2={b.y} className="journey-route" />;
+                    return <line key={`${person.id}-${index}`} x1={a.x} y1={a.y} x2={b.x} y2={b.y} className="journey-route" style={{ stroke: color }} />;
                   }),
                 )}
               </svg>
-              {journeys.flatMap(({ person, points }) =>
+              {journeys.flatMap(({ person, points, color }) =>
                 points.map(({ location }, index) => {
                   const point = pointForFallback(location);
                   if (!point) return null;
                   return (
                     <button
                       key={`${person.id}-${location.providerId || location.display}-${index}`}
-                      className={`journey-pin ${index === 0 ? "birth" : "residence"}`}
-                      style={{ left: `${point.x}%`, top: `${point.y}%` }}
+                      className={`journey-pin ${location.kind === "Birthplace" ? "birth" : "residence"}`}
+                      style={{ left: `${point.x}%`, top: `${point.y}%`, "--journey-color": color }}
                       onClick={() => openPerson(person)}
                       title={`${person.name}: ${location.kind} — ${location.display}`}
                     >
@@ -311,13 +332,40 @@ export default function JourneyMap({ people, relationships = [], branchFor, open
               <span>Edit people and select their cities using the structured location picker.</span>
             </div>
           )}
+          {!!journeys.length && (
+            <div className="journey-route-legend" aria-label="Visible family routes">
+              {journeys.slice(0, 7).map(({ person, color }) => (
+                <button type="button" key={person.id} onClick={() => openPerson(person)}>
+                  <i style={{ background: color }} />{person.name}
+                </button>
+              ))}
+              {journeys.length > 7 && <span>+{journeys.length - 7} more</span>}
+            </div>
+          )}
+        </div>
+      </section>
+
+      <section className="panel family-chronology">
+        <div className="panel-title">
+          <div><span className="mini-title">FAMILY CHRONOLOGY</span><h2>Lives across time</h2><p>Dated births and moves from the current map filter.</p></div>
+          {chronologySpan && <span className="chronology-span"><CalendarDays size={15} />{chronologySpan}</span>}
+        </div>
+        <div className="chronology-track">
+          {chronology.slice(0, 60).map(({ person, location, year, color }, index) => (
+            <button type="button" key={`${person.id}-${location.kind}-${year}-${index}`} onClick={() => openPerson(person)}>
+              <span className="chronology-year">{year}</span>
+              <i style={{ background: color }} />
+              <span className="chronology-event"><strong>{person.name}</strong><small>{location.kind === "Birthplace" ? "Born" : "Moved"} · {location.display}</small></span>
+            </button>
+          ))}
+          {!chronology.length && <p className="muted">Add birth years or residence start years to build a shared family chronology.</p>}
         </div>
       </section>
 
       <section className="panel journey-timeline-list">
         <div className="panel-title"><div><span className="mini-title">MIGRATION TIMELINES</span><h2>Recorded routes</h2></div></div>
-        {journeys.slice(0, 12).map(({ person, points }) => (
-          <button key={person.id} onClick={() => openPerson(person)}>
+        {journeys.slice(0, 12).map(({ person, points, color }) => (
+          <button key={person.id} onClick={() => openPerson(person)} style={{ "--journey-color": color }}>
             <strong>{person.name}</strong>
             <span>{points.map(({ location }) => `${location.display}${location.startYear ? ` (${location.startYear}${location.endYear ? `–${location.endYear}` : ""})` : ""}`).join(" → ")}</span>
           </button>

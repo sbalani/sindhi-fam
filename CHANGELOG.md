@@ -1,5 +1,14 @@
 # Vansh changelog
 
+## 0.16.0 - Voice import and family chronology
+
+- Replaced the one-relative voice helper with a review-first, multi-person family-story import.
+- Added an authenticated, graph-locked and idempotent RPC that saves each confirmed import atomically.
+- Prevented detached relatives, oversized audio, hidden background saves and anonymous RPC execution.
+- Added stable route colors, an interactive route legend and a dated cross-family chronology to Family Journey.
+- Preserved the Privacy Policy and Terms of Use as visibly marked drafts until operator, contact, domain and jurisdiction details are supplied.
+- Added migrations `20260921110236_add_voice_family_import.sql` and `20260921111409_harden_voice_family_import.sql`.
+
 ## 0.15.1 - Family editing hardening
 
 - Made multi-edge sibling linking one graph-locked, validated, idempotent transaction.
