@@ -59,7 +59,7 @@ export const buildTraditionalTreeLayout = (people, relationships, levels = {}) =
   });
   for (let pass = 0; pass < people.length; pass += 1) {
     relationships.forEach((relationship) => {
-      if (relationship.type !== "sibling") return;
+      if (relationship.type !== "sibling" || relationship.variant === "half") return;
       const fromParents = displayParents.get(relationship.from);
       const toParents = displayParents.get(relationship.to);
       if (!fromParents || !toParents) return;
@@ -154,6 +154,24 @@ export const buildTraditionalTreeLayout = (people, relationships, levels = {}) =
   }, {}))
     .map(([level, generationUnits]) => ({ level: Number(level), units: orderUnits(generationUnits) }))
     .sort((left, right) => left.level - right.level);
+  rows.forEach((row, rowIndex) => {
+    if (rowIndex === 0) return;
+    const previousOrder = new Map(rows[rowIndex - 1].units.map((unit, index) => [unit.id, index]));
+    const originalOrder = new Map(row.units.map((unit, index) => [unit.id, index]));
+    const parentPosition = (unit) => {
+      const positions = unit.members.flatMap((member) =>
+        [...(displayParents.get(member.id) || [])]
+          .map((parentId) => previousOrder.get(assignedUnit.get(parentId)))
+          .filter((position) => position !== undefined),
+      );
+      return positions.length
+        ? positions.reduce((total, position) => total + position, 0) / positions.length
+        : Number.POSITIVE_INFINITY;
+    };
+    row.units.sort((left, right) =>
+      parentPosition(left) - parentPosition(right) || originalOrder.get(left.id) - originalOrder.get(right.id),
+    );
+  });
 
   const edges = [];
   const edgesByKey = new Map();
@@ -175,6 +193,8 @@ export const buildTraditionalTreeLayout = (people, relationships, levels = {}) =
           key,
           from: parentUnitId,
           to: childUnit.id,
+          fromLevel: units.find((unit) => unit.id === parentUnitId)?.level,
+          toLevel: childUnit.level,
           fromPersonId: parentId,
           toPersonId: child.id,
           kind: "parent",
@@ -253,7 +273,7 @@ export const siblingDetailsFor = (personId, relationships) => {
         };
       })
       .filter(Boolean);
-    const directReported = relationships.some(
+    const directSibling = relationships.find(
       (relationship) =>
         relationship.type === "sibling" &&
         ((relationship.from === personId && relationship.to === id) ||
@@ -271,11 +291,46 @@ export const siblingDetailsFor = (personId, relationships) => {
             ? "half"
             : shared.some((item) => item.stepLike)
               ? "step"
-              : directReported
-                ? "reported"
-                : "reported",
+               : directSibling?.variant === "half"
+                 ? "half"
+                 : directSibling
+                   ? "reported"
+                 : "reported",
     };
   });
+};
+
+export const parentConnectorLane = (fromY, toY, index, total) => {
+  if (total <= 1) return fromY + (toY - fromY) / 2;
+  const ratio = 0.28 + (0.44 * index) / (total - 1);
+  return fromY + (toY - fromY) * ratio;
+};
+
+export const assignParentConnectorLanes = (measurements) => {
+  const lanes = new Map();
+  const generationGroups = new Map();
+  measurements.forEach((measurement) => {
+    const generationKey = `${measurement.fromLevel}:${measurement.toLevel}`;
+    if (!generationGroups.has(generationKey)) generationGroups.set(generationKey, []);
+    generationGroups.get(generationKey).push(measurement);
+  });
+  generationGroups.forEach((generation) => {
+    const byParentUnit = new Map();
+    generation.forEach((measurement) => {
+      if (!byParentUnit.has(measurement.from)) byParentUnit.set(measurement.from, []);
+      byParentUnit.get(measurement.from).push(measurement);
+    });
+    const parentUnits = [...byParentUnit.entries()].sort(([, left], [, right]) =>
+      Math.min(...left.map((item) => item.fromX)) - Math.min(...right.map((item) => item.fromX)),
+    );
+    const fromY = Math.max(...generation.map((measurement) => measurement.fromY));
+    const toY = Math.min(...generation.map((measurement) => measurement.toY));
+    parentUnits.forEach(([, edges], index) => {
+      const lane = parentConnectorLane(fromY, toY, index, parentUnits.length);
+      edges.forEach((edge) => lanes.set(edge.key, lane));
+    });
+  });
+  return lanes;
 };
 
 export const siblingKindBetween = (personAId, personBId, relationships) =>

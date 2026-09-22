@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   parentIdsFor,
+  parentConnectorLane,
+  assignParentConnectorLanes,
   siblingDetailsFor,
   shortestRelationshipPath,
   deriveBranchLabel,
@@ -28,6 +30,11 @@ test('half sibling derives from exactly one shared parent', () => {
   const sibling = siblingDetailsFor('a', relationships).find((item) => item.id === 'b');
   assert.equal(sibling?.kind, 'half');
   assert.deepEqual(sibling?.sharedParentIds, ['m']);
+});
+
+test('explicit half sibling remains half when shared parents are not recorded', () => {
+  const relationships = [rel('a', 'b', 'sibling', 'half')];
+  assert.equal(siblingDetailsFor('a', relationships).find((item) => item.id === 'b')?.kind, 'half');
 });
 
 test('step sibling is not mistaken for biological half sibling', () => {
@@ -107,6 +114,39 @@ test('traditional edges retain the actual partner or parent card endpoint', () =
   const parentEdge = edges.find((edge) => edge.kind === 'parent');
   assert.equal(parentEdge.fromPersonId, 'parent');
   assert.equal(parentEdge.toPersonId, 'child');
+});
+
+test('half sibling display does not copy the other sibling parent set', () => {
+  const people = ['parent', 'a', 'b'].map((id) => ({ id, firstName: id, surname: 'Family' }));
+  const relationships = [rel('parent', 'a'), rel('a', 'b', 'sibling', 'half')];
+  const { edges } = buildTraditionalTreeLayout(people, relationships, { parent: -1, a: 0, b: 0 });
+  assert.ok(edges.some((edge) => edge.toPersonId === 'a'));
+  assert.ok(!edges.some((edge) => edge.toPersonId === 'b'));
+});
+
+test('traditional rows group children beneath their recorded parent units', () => {
+  const people = ['p1', 'p2', 'c1', 'c2'].map((id) => ({ id, firstName: id, surname: 'Family' }));
+  const relationships = [rel('p1', 'c1'), rel('p2', 'c2')];
+  const { rows } = buildTraditionalTreeLayout(people, relationships, { p1: -1, p2: -1, c1: 0, c2: 0 });
+  const parentOrder = rows[0].units.map((unit) => unit.members[0].id);
+  const childOrder = rows[1].units.map((unit) => unit.members[0].id);
+  assert.equal(childOrder[parentOrder.indexOf('p1')], 'c1');
+  assert.equal(childOrder[parentOrder.indexOf('p2')], 'c2');
+});
+
+test('parent connectors use separate lanes within one generation gap', () => {
+  assert.notEqual(parentConnectorLane(100, 300, 0, 3), parentConnectorLane(100, 300, 1, 3));
+  assert.equal(parentConnectorLane(100, 300, 0, 1), 200);
+});
+
+test('children of one parent unit share a lane while unrelated parent units do not', () => {
+  const lanes = assignParentConnectorLanes([
+    { key: 'a-1', from: 'parents-a', fromLevel: -1, toLevel: 0, fromX: 100, fromY: 220, toY: 400 },
+    { key: 'a-2', from: 'parents-a', fromLevel: -1, toLevel: 0, fromX: 100, fromY: 220, toY: 400 },
+    { key: 'b-1', from: 'parents-b', fromLevel: -1, toLevel: 0, fromX: 500, fromY: 250, toY: 400 },
+  ]);
+  assert.equal(lanes.get('a-1'), lanes.get('a-2'));
+  assert.notEqual(lanes.get('a-1'), lanes.get('b-1'));
 });
 
 test('surname suggestions follow the selected anchor instead of the signed-in family', () => {

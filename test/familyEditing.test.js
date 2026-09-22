@@ -7,6 +7,7 @@ import {
   primaryConnectionFromForm,
   correctionPayloadChanged,
   loadConnectionSnapshots,
+  newRelativeAdditionsFromForm,
   parentLinksForMember,
   relationSwitchValues,
   relationshipRpcArgs,
@@ -72,6 +73,27 @@ test("serializes children and recognizes only existing-person graph connections"
     children: [],
     partners: [],
   }), false);
+});
+
+test("serializes detailed child and sibling additions", () => {
+  const additions = newRelativeAdditionsFromForm({
+    childLinks: [{
+      mode: "new",
+      newPerson: { firstName: "Maya", surname: "Sabnani", gender: "female", birthDate: "2001-02-03" },
+      coParentId: "co-parent",
+      variant: "biological",
+      confidence: "documented",
+    }],
+    siblingLinks: [{
+      newPerson: { firstName: "Ravi", surname: "Sabnani", gender: "male" },
+      hasDifferentParents: true,
+      confidence: "reported",
+    }],
+  });
+  assert.equal(additions.children[0].new_person.first_name, "Maya");
+  assert.equal(additions.children[0].co_parent_id, "co-parent");
+  assert.equal(additions.siblings[0].new_person.first_name, "Ravi");
+  assert.equal(additions.siblings[0].has_different_parents, true);
 });
 
 test("serializes a new named partner for atomic creation", () => {

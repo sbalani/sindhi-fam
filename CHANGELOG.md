@@ -1,5 +1,12 @@
 # Vansh changelog
 
+## 0.17.3 - Detailed relatives and cleaner family branches
+
+- Added atomic creation of detailed children with an optional recorded co-parent.
+- Replaced new spouse placeholders with named spouse and partner details.
+- Added sibling creation that copies recorded parents or marks a different-parent half sibling.
+- Grouped family-tree branches beneath their actual parent couples and separated unrelated connector lanes.
+
 ## 0.17.2 - Relationship-first family entry
 
 - Removed the mandatory direct-relative choice when adding a person.

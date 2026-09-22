@@ -3,6 +3,7 @@ import {
   ensureTwoParentRows,
   makeEmptyChildLink,
   makeEmptyParentLink,
+  makeEmptySiblingLink,
 } from "../utils/familyEditing.js";
 
 const PLACEHOLDER = "__placeholder__";
@@ -34,6 +35,20 @@ const emptyPartner = () => ({
   newPerson: emptyNewPerson(),
 });
 
+function NewPersonFields({ link, updateLink, disabled }) {
+  return (
+    <div className="new-connected-person-fields">
+      <strong>New person details</strong>
+      <label>First name<input required maxLength={100} disabled={disabled} value={link.newPerson?.firstName || ""} onChange={(event) => updateLink({ newPerson: { ...link.newPerson, firstName: event.target.value } })} /></label>
+      <label>Surname<input required maxLength={100} disabled={disabled} value={link.newPerson?.surname || ""} onChange={(event) => updateLink({ newPerson: { ...link.newPerson, surname: event.target.value } })} /></label>
+      <label>Nickname <small>Optional</small><input maxLength={100} disabled={disabled} value={link.newPerson?.nickname || ""} onChange={(event) => updateLink({ newPerson: { ...link.newPerson, nickname: event.target.value } })} /></label>
+      <label>Maiden / earlier surname <small>Optional</small><input maxLength={160} disabled={disabled} value={link.newPerson?.maidenName || ""} onChange={(event) => updateLink({ newPerson: { ...link.newPerson, maidenName: event.target.value } })} /></label>
+      <label>Gender wording<select disabled={disabled} value={link.newPerson?.gender || "unspecified"} onChange={(event) => updateLink({ newPerson: { ...link.newPerson, gender: event.target.value } })}><option value="unspecified">Not specified</option><option value="female">Female</option><option value="male">Male</option><option value="nonbinary">Non-binary</option></select></label>
+      <label>Date of birth <small>Optional</small><input type="date" min="1800-01-01" max={new Date().toISOString().slice(0, 10)} disabled={disabled} value={link.newPerson?.birthDate || ""} onChange={(event) => updateLink({ newPerson: { ...link.newPerson, birthDate: event.target.value } })} /></label>
+    </div>
+  );
+}
+
 export default function FamilyConnectionsEditor({
   people,
   currentPersonId,
@@ -41,6 +56,8 @@ export default function FamilyConnectionsEditor({
   setParentLinks,
   childLinks = null,
   setChildLinks = null,
+  siblingLinks = null,
+  setSiblingLinks = null,
   partnerLinks,
   setPartnerLinks,
   anchorName = "",
@@ -63,10 +80,27 @@ export default function FamilyConnectionsEditor({
     setChildLinks?.((rows) => rows.map((row) => (row.key === key ? { ...row, ...changes } : row)));
   const removeChild = (key) =>
     setChildLinks?.((rows) => rows.filter((row) => row.key !== key));
-  const updatePartner = (key, changes) =>
+  const clearCoParent = (personId) => {
+    if (!personId || !setChildLinks) return;
+    setChildLinks((rows) => rows.map((row) => row.coParentId === personId ? { ...row, coParentId: "" } : row));
+  };
+  const updatePartner = (key, changes) => {
+    const previousPersonId = partnerLinks.find((row) => row.key === key)?.personId;
+    if (changes.personId !== undefined && changes.personId !== previousPersonId) clearCoParent(previousPersonId);
     setPartnerLinks((rows) => rows.map((row) => (row.key === key ? { ...row, ...changes } : row)));
-  const removePartner = (key) =>
+  };
+  const removePartner = (key) => {
+    clearCoParent(partnerLinks.find((row) => row.key === key)?.personId);
     setPartnerLinks((rows) => rows.filter((row) => row.key !== key));
+  };
+  const updateSibling = (key, changes) =>
+    setSiblingLinks?.((rows) => rows.map((row) => (row.key === key ? { ...row, ...changes } : row)));
+  const removeSibling = (key) =>
+    setSiblingLinks?.((rows) => rows.filter((row) => row.key !== key));
+  const coParentCandidates = partnerLinks
+    .filter((link) => link.mode === "existing" && link.personId)
+    .map((link) => people.find((person) => person.id === link.personId))
+    .filter(Boolean);
 
   return (
     <div className="family-context-editor wide">
@@ -187,7 +221,7 @@ export default function FamilyConnectionsEditor({
       {childLinks && setChildLinks && (
         <fieldset className="family-context-group">
           <legend>Children of {subjectName}</legend>
-          <p>Optional. Choose existing people for whom {subjectName} is a parent.</p>
+          <p>{allowNewPeople ? `Choose an existing person or create a new child of ${subjectName}.` : `Optional. Choose existing people for whom ${subjectName} is a parent.`}</p>
           <div className="family-link-list">
             {childLinks.map((link, index) => (
               <div className="family-link-row parent-link-row" key={link.key}>
@@ -195,8 +229,11 @@ export default function FamilyConnectionsEditor({
                   Child {index + 1}
                   <select
                     disabled={disabled}
-                    value={link.personId || ""}
-                    onChange={(event) => updateChild(link.key, { personId: event.target.value })}
+                    value={link.mode === "new" ? NEW_PERSON : link.personId || ""}
+                    onChange={(event) => updateChild(link.key, {
+                      mode: event.target.value === NEW_PERSON ? "new" : "existing",
+                      personId: event.target.value === NEW_PERSON ? "" : event.target.value,
+                    })}
                   >
                     <option value="">Choose an existing person…</option>
                     {candidatePeople
@@ -204,6 +241,7 @@ export default function FamilyConnectionsEditor({
                       .map((person) => (
                       <option value={person.id} key={person.id}>{person.name}</option>
                       ))}
+                    {allowNewPeople && <option value={NEW_PERSON}>Create a new child with details…</option>}
                   </select>
                 </label>
                 <label>
@@ -220,6 +258,18 @@ export default function FamilyConnectionsEditor({
                     <option value="unspecified">Not specified</option>
                   </select>
                 </label>
+                {allowNewPeople && coParentCandidates.length > 0 && (
+                  <label>
+                    Other parent <small>Optional</small>
+                    <select disabled={disabled} value={link.coParentId || ""} onChange={(event) => updateChild(link.key, { coParentId: event.target.value })}>
+                      <option value="">Only {subjectName}</option>
+                      {coParentCandidates.map((person) => <option value={person.id} key={person.id}>{person.name}</option>)}
+                    </select>
+                  </label>
+                )}
+                {link.mode === "new" && (
+                  <NewPersonFields link={link} updateLink={(changes) => updateChild(link.key, changes)} disabled={disabled} />
+                )}
                 <label>
                   Confidence
                   <select
@@ -261,9 +311,42 @@ export default function FamilyConnectionsEditor({
             type="button"
             className="quiet family-context-add"
             disabled={disabled}
-            onClick={() => setChildLinks((rows) => [...rows, makeEmptyChildLink()])}
+            onClick={() => setChildLinks((rows) => [...rows, {
+              ...makeEmptyChildLink(),
+              mode: allowNewPeople ? "new" : "existing",
+            }])}
           >
             <Plus size={15} /> Add child
+          </button>
+        </fieldset>
+      )}
+
+      {allowNewPeople && siblingLinks && setSiblingLinks && (
+        <fieldset className="family-context-group">
+          <legend>Siblings of {subjectName}</legend>
+          <p>Create a sibling. By default Vansh copies all parents currently recorded for {subjectName}.</p>
+          <div className="family-link-list">
+            {siblingLinks.map((link, index) => (
+              <div className="family-link-row sibling-link-row" key={link.key}>
+                <NewPersonFields link={link} updateLink={(changes) => updateSibling(link.key, changes)} disabled={disabled} />
+                <label className="inline-check co-parent-choice">
+                  <input type="checkbox" disabled={disabled} checked={Boolean(link.hasDifferentParents)} onChange={(event) => updateSibling(link.key, { hasDifferentParents: event.target.checked })} />
+                  Has different parents (record as half sibling)
+                </label>
+                <label>
+                  Confidence
+                  <select disabled={disabled} value={link.confidence || "reported"} onChange={(event) => updateSibling(link.key, { confidence: event.target.value })}>
+                    <option value="reported">Reported</option><option value="probable">Probable</option><option value="uncertain">Uncertain</option><option value="documented">Documented</option><option value="disputed">Disputed</option>
+                  </select>
+                </label>
+                <label>Relationship source <small>Optional</small><input disabled={disabled} maxLength={1000} value={link.provenanceNote || ""} onChange={(event) => updateSibling(link.key, { provenanceNote: event.target.value })} /></label>
+                <button type="button" className="icon-danger family-link-remove" onClick={() => removeSibling(link.key)} disabled={disabled} aria-label={`Remove sibling ${index + 1}`}><Trash2 size={15} /></button>
+              </div>
+            ))}
+          </div>
+          {!siblingLinks.length && <small className="family-context-empty">No new sibling added.</small>}
+          <button type="button" className="quiet family-context-add" disabled={disabled} onClick={() => setSiblingLinks((rows) => [...rows, makeEmptySiblingLink()])}>
+            <Plus size={15} /> Add sibling
           </button>
         </fieldset>
       )}
@@ -280,12 +363,12 @@ export default function FamilyConnectionsEditor({
                 {link.type === "partner" ? "Partner" : "Spouse"} {index + 1}
                 <select
                   disabled={disabled}
-                  value={link.mode === "placeholder" ? PLACEHOLDER : link.mode === "new" ? NEW_PERSON : link.personId || ""}
+                  value={link.mode === "new" ? NEW_PERSON : link.personId || ""}
                   onChange={(event) => {
                     const value = event.target.value;
                     updatePartner(link.key, {
-                      mode: value === PLACEHOLDER ? "placeholder" : value === NEW_PERSON ? "new" : "existing",
-                      personId: [PLACEHOLDER, NEW_PERSON].includes(value) ? "" : value,
+                      mode: value === NEW_PERSON ? "new" : "existing",
+                      personId: value === NEW_PERSON ? "" : value,
                       newPerson: link.newPerson || emptyNewPerson(),
                     });
                   }}
@@ -295,7 +378,6 @@ export default function FamilyConnectionsEditor({
                     <option value={person.id} key={person.id}>{person.name}</option>
                   ))}
                   {allowNewPeople && <option value={NEW_PERSON}>Create a new person with details…</option>}
-                  <option value={PLACEHOLDER}>Create placeholder spouse / partner…</option>
                 </select>
               </label>
               <label>
@@ -370,42 +452,8 @@ export default function FamilyConnectionsEditor({
                   placeholder="e.g. family account or certificate"
                 />
               </label>
-              {link.mode === "placeholder" && (
-                <>
-                  <label>
-                    Placeholder label
-                    <input
-                      disabled={disabled}
-                      value={link.placeholderLabel || ""}
-                      onChange={(event) => updatePartner(link.key, { placeholderLabel: event.target.value })}
-                      placeholder="e.g. First husband / Unknown partner"
-                    />
-                  </label>
-                  <label>
-                    Wording
-                    <select
-                      disabled={disabled}
-                      value={link.placeholderGender || "unspecified"}
-                      onChange={(event) => updatePartner(link.key, { placeholderGender: event.target.value })}
-                    >
-                      <option value="unspecified">Not specified</option>
-                      <option value="female">Female</option>
-                      <option value="male">Male</option>
-                      <option value="nonbinary">Non-binary</option>
-                    </select>
-                  </label>
-                </>
-              )}
               {link.mode === "new" && (
-                <div className="new-connected-person-fields">
-                  <strong>New person details</strong>
-                  <label>First name<input required maxLength={100} disabled={disabled} value={link.newPerson?.firstName || ""} onChange={(event) => updatePartner(link.key, { newPerson: { ...link.newPerson, firstName: event.target.value } })} /></label>
-                  <label>Surname<input required maxLength={100} disabled={disabled} value={link.newPerson?.surname || ""} onChange={(event) => updatePartner(link.key, { newPerson: { ...link.newPerson, surname: event.target.value } })} /></label>
-                  <label>Nickname <small>Optional</small><input maxLength={100} disabled={disabled} value={link.newPerson?.nickname || ""} onChange={(event) => updatePartner(link.key, { newPerson: { ...link.newPerson, nickname: event.target.value } })} /></label>
-                  <label>Maiden / earlier surname <small>Optional</small><input maxLength={160} disabled={disabled} value={link.newPerson?.maidenName || ""} onChange={(event) => updatePartner(link.key, { newPerson: { ...link.newPerson, maidenName: event.target.value } })} /></label>
-                  <label>Gender wording<select disabled={disabled} value={link.newPerson?.gender || "unspecified"} onChange={(event) => updatePartner(link.key, { newPerson: { ...link.newPerson, gender: event.target.value } })}><option value="unspecified">Not specified</option><option value="female">Female</option><option value="male">Male</option><option value="nonbinary">Non-binary</option></select></label>
-                  <label>Date of birth <small>Optional</small><input type="date" min="1800-01-01" max={new Date().toISOString().slice(0, 10)} disabled={disabled} value={link.newPerson?.birthDate || ""} onChange={(event) => updatePartner(link.key, { newPerson: { ...link.newPerson, birthDate: event.target.value } })} /></label>
-                </div>
+                <NewPersonFields link={link} updateLink={(changes) => updatePartner(link.key, changes)} disabled={disabled} />
               )}
               {allowAnchorCoParent && (
                 <label className="inline-check co-parent-choice">
@@ -435,7 +483,10 @@ export default function FamilyConnectionsEditor({
           type="button"
           className="quiet family-context-add"
           disabled={disabled}
-          onClick={() => setPartnerLinks((rows) => [...rows, emptyPartner()])}
+          onClick={() => setPartnerLinks((rows) => [...rows, {
+            ...emptyPartner(),
+            mode: allowNewPeople ? "new" : "existing",
+          }])}
         >
           <Plus size={15} /> Add spouse / partner
         </button>

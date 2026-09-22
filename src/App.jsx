@@ -45,8 +45,10 @@ import useUrlPage from "./hooks/useUrlPage.js";
 import useDialogAccessibility from "./hooks/useDialogAccessibility.js";
 import {
   buildTraditionalTreeLayout,
+  assignParentConnectorLanes,
   deriveBranchLabel,
   parentIdsFor,
+  parentConnectorLane,
   shortestRelationshipPath,
   siblingDetailsFor,
   surnameSuggestionsFor,
@@ -60,6 +62,7 @@ import {
   ensureTwoParentRows,
   hasExistingConnection,
   loadConnectionSnapshots,
+  newRelativeAdditionsFromForm,
   parentLinksForMember,
   primaryConnectionFromForm,
   relationSwitchValues,
@@ -75,7 +78,7 @@ const nav = [
   { id: "matches", label: "Connections", icon: Sparkles },
 ];
 
-const APP_VERSION = "0.17.2";
+const APP_VERSION = "0.17.3";
 
 const RELATION_OPTIONS = [
   {
@@ -1376,6 +1379,29 @@ function Tree({
       frame = window.requestAnimationFrame(() => {
         const canvasRect = canvas.getBoundingClientRect();
         const scale = canvas.offsetWidth ? canvasRect.width / canvas.offsetWidth : 1;
+        const parentMeasurements = measuredEdges.flatMap((edge) => {
+          if (edge.kind !== "parent") return [];
+          const parent = edge.fromPersonId
+            ? traditionalPersonRefs.current.get(edge.fromPersonId)
+            : traditionalUnitRefs.current.get(edge.from);
+          const child = edge.toPersonId
+            ? traditionalPersonRefs.current.get(edge.toPersonId)
+            : traditionalUnitRefs.current.get(edge.to);
+          if (!parent || !child) return [];
+          const parentRect = parent.getBoundingClientRect();
+          const childRect = child.getBoundingClientRect();
+          return [{
+            key: edge.key,
+            from: edge.from,
+            fromLevel: edge.fromLevel,
+            toLevel: edge.toLevel,
+            fromX: (parentRect.left + parentRect.width / 2 - canvasRect.left) / scale,
+            fromY: (parentRect.bottom - canvasRect.top) / scale,
+            toX: (childRect.left + childRect.width / 2 - canvasRect.left) / scale,
+            toY: (childRect.top - canvasRect.top) / scale,
+          }];
+        });
+        const lanes = assignParentConnectorLanes(parentMeasurements);
         const paths = measuredEdges.flatMap((edge) => {
           const parent = edge.fromPersonId
             ? traditionalPersonRefs.current.get(edge.fromPersonId)
@@ -1411,7 +1437,7 @@ function Tree({
           const fromY = (parentRect.bottom - canvasRect.top) / scale;
           const toX = (childRect.left + childRect.width / 2 - canvasRect.left) / scale;
           const toY = (childRect.top - canvasRect.top) / scale;
-          const middleY = fromY + (toY - fromY) / 2;
+          const middleY = lanes.get(edge.key) ?? parentConnectorLane(fromY, toY, 0, 1);
           return [
             {
               key: edge.key,
@@ -3199,6 +3225,7 @@ function PersonModal({
   const initialPartnerLinks = person ? partnerLinksFor(person.id) : [];
   const [step, setStep] = useState(initialStep);
   const [form, setForm] = useState({
+    idempotencyKey: crypto.randomUUID(),
     firstName: person?.firstName || draft?.firstName || "",
     nickname: person?.nickname || "",
     surname: person?.surname || draft?.surname || initialSurnameSuggestions[0] || "",
@@ -3221,6 +3248,7 @@ function PersonModal({
     privacyLevel: person?.privacyLevel || "family",
     parentLinks: ensureTwoParentRows(initialParentLinks),
     childLinks: [],
+    siblingLinks: [],
     partnerLinks: initialPartnerLinks,
     marriageYear: "",
     relationshipEndYear: "",
@@ -3480,11 +3508,16 @@ function PersonModal({
                   ...current,
                   parentLinks: typeof updater === "function" ? updater(current.parentLinks) : updater,
                 }))}
-                childLinks={person ? null : form.childLinks}
-                setChildLinks={person ? null : (updater) => setForm((current) => ({
+                childLinks={person?.canSuggest ? null : form.childLinks}
+                setChildLinks={person?.canSuggest ? null : (updater) => setForm((current) => ({
                   ...current,
                   childLinks: typeof updater === "function" ? updater(current.childLinks) : updater,
                 }))}
+                siblingLinks={person?.canEdit ? form.siblingLinks : null}
+                setSiblingLinks={person?.canEdit ? (updater) => setForm((current) => ({
+                  ...current,
+                  siblingLinks: typeof updater === "function" ? updater(current.siblingLinks) : updater,
+                })) : null}
                 partnerLinks={form.partnerLinks}
                 setPartnerLinks={(updater) => setForm((current) => ({
                   ...current,
@@ -4211,6 +4244,8 @@ function FamilyApp({ session }) {
     if (existing) {
       if (existing.isPlaceholder) details.fill_placeholder = true;
       const hasNewPartners = connections.partners.some((partner) => partner.new_person);
+      const additions = newRelativeAdditionsFromForm(form);
+      const hasNewRelatives = hasNewPartners || additions.children.length > 0 || additions.siblings.length > 0;
       const editArgs = {
         p_member_id: existing.id,
         p_expected_revision: existing.revision || 1,
@@ -4218,8 +4253,12 @@ function FamilyApp({ session }) {
         p_details: details,
         p_connections: connections,
       };
-      const memberResult = hasNewPartners
-        ? await supabase.rpc("edit_family_member_with_new_partners", editArgs)
+      const memberResult = hasNewRelatives
+        ? await supabase.rpc("edit_family_member_with_new_relatives", {
+            ...editArgs,
+            p_additions: additions,
+            p_idempotency_key: form.idempotencyKey,
+          })
         : await supabase.rpc("edit_family_member", editArgs);
       if (memberResult.error) throw memberResult.error;
       await refreshFamilyData();
@@ -4241,7 +4280,7 @@ function FamilyApp({ session }) {
         p_anchor_id: anchorPerson.id,
         p_member_id: duplicate.id,
         p_bundle: bundle,
-        p_idempotency_key: crypto.randomUUID(),
+        p_idempotency_key: form.idempotencyKey,
       });
       if (linkResult.error) throw linkResult.error;
       await refreshFamilyData();
@@ -4252,7 +4291,7 @@ function FamilyApp({ session }) {
       p_anchor_id: anchorPerson.id,
       p_details: details,
       p_bundle: bundle,
-      p_idempotency_key: crypto.randomUUID(),
+      p_idempotency_key: form.idempotencyKey,
     });
     if (memberResult.error) throw memberResult.error;
 

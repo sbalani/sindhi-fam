@@ -24,7 +24,31 @@ export const makeEmptyChildLink = () => ({
   relationshipId: null,
   mode: "existing",
   personId: "",
+  newPerson: {
+    firstName: "",
+    surname: "",
+    nickname: "",
+    maidenName: "",
+    gender: "unspecified",
+    birthDate: "",
+  },
+  coParentId: "",
   variant: "biological",
+  confidence: "reported",
+  provenanceNote: "",
+});
+
+export const makeEmptySiblingLink = () => ({
+  key: crypto.randomUUID(),
+  newPerson: {
+    firstName: "",
+    surname: "",
+    nickname: "",
+    maidenName: "",
+    gender: "unspecified",
+    birthDate: "",
+  },
+  hasDifferentParents: false,
   confidence: "reported",
   provenanceNote: "",
 });
@@ -102,6 +126,20 @@ const connectionPerson = (link, fallbackLabel) =>
 const relationshipVariant = (type, value) =>
   type === "parent" && (!value || value === "unspecified") ? null : value || null;
 
+const detailedPerson = (link, label) => {
+  if (!link.newPerson?.firstName?.trim() || !link.newPerson?.surname?.trim()) {
+    throw new Error(`A new ${label} needs a first name and surname.`);
+  }
+  return {
+    first_name: link.newPerson.firstName.trim(),
+    surname: link.newPerson.surname.trim(),
+    nickname: link.newPerson.nickname?.trim() || null,
+    maiden_name: link.newPerson.maidenName?.trim() || null,
+    gender: link.newPerson.gender || "unspecified",
+    birth_date: link.newPerson.birthDate || null,
+  };
+};
+
 export function connectionBundleFromForm(form, member, relationships, primary = null) {
   const parents = (form.parentLinks || [])
     .filter((link) => link.mode === "placeholder" || link.personId)
@@ -139,9 +177,7 @@ export function connectionBundleFromForm(form, member, relationships, primary = 
   const partners = (form.partnerLinks || [])
     .filter((link) => link.mode === "placeholder" || link.mode === "new" || link.personId)
     .map((link) => {
-      if (link.mode === "new" && (!link.newPerson?.firstName?.trim() || !link.newPerson?.surname?.trim())) {
-        throw new Error("A new spouse or partner needs a first name and surname.");
-      }
+      if (link.mode === "new") detailedPerson(link, "spouse or partner");
       const startYear = relationshipYear(link.startYear, "Partnership start year");
       const endYear = relationshipYear(link.endYear, "Partnership end year");
       if (startYear && endYear && startYear > endYear) {
@@ -183,6 +219,27 @@ export function connectionBundleFromForm(form, member, relationships, primary = 
     partners,
     siblings,
   };
+}
+
+export function newRelativeAdditionsFromForm(form) {
+  const children = (form.childLinks || [])
+    .filter((link) => link.mode === "new" || link.personId)
+    .map((link) => ({
+      ...(link.mode === "new"
+        ? { new_person: detailedPerson(link, "child") }
+        : { person_id: link.personId }),
+      co_parent_id: link.coParentId || null,
+      variant: relationshipVariant("parent", link.variant),
+      confidence: link.confidence || "reported",
+      provenance_note: link.provenanceNote?.trim() || null,
+    }));
+  const siblings = (form.siblingLinks || []).map((link) => ({
+    new_person: detailedPerson(link, "sibling"),
+    has_different_parents: Boolean(link.hasDifferentParents),
+    confidence: link.confidence || "reported",
+    provenance_note: link.provenanceNote?.trim() || null,
+  }));
+  return { children, siblings };
 }
 
 export const hasExistingConnection = (connections) =>
