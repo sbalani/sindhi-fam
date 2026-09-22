@@ -3350,6 +3350,7 @@ function PersonModal({
   const selectedRelation = RELATION_OPTIONS.find((option) => option.value === form.relation);
   const hasSelectedExistingConnection = [form.parentLinks, form.childLinks, form.partnerLinks]
     .some((links = []) => links.some((link) => link.mode !== "placeholder" && Boolean(link.personId)));
+  const hasNewChildDetails = form.childLinks.some((link) => link.mode === "new");
   const surnameSuggestions = surnameSuggestionsFor(form.anchorId, form.relation, people, relationships);
   const contextOwnerId = person?.ownerId || anchorPerson?.ownerId;
   const contextPeople = people.filter((item) => !contextOwnerId || item.ownerId === contextOwnerId);
@@ -3576,6 +3577,8 @@ function PersonModal({
                 }))}
                 anchorName={anchorPerson?.firstName || ""}
                 allowNewPeople={Boolean(person?.canEdit)}
+                allowNewChildren={!person || Boolean(person?.canEdit)}
+                allowExistingChildCoParent={Boolean(person?.canEdit)}
                 subjectName={person?.firstName || form.firstName.trim() || "this new person"}
                 excludedParentIds={excludedParentIds}
                 disabled={false}
@@ -3779,11 +3782,17 @@ function PersonModal({
                 <button
                   type="button"
                   className="quiet"
-                  disabled={saving || !candidate.canReuse}
+                  disabled={saving || !candidate.canReuse || hasNewChildDetails}
                   onClick={() => resolveDuplicate(candidate.id)}
-                  title={candidate.canReuse ? "Use this managed record" : "This profile is managed by another family member"}
+                  title={hasNewChildDetails
+                    ? "Create the new record to save its new children in the same transaction"
+                    : candidate.canReuse
+                      ? "Use this managed record"
+                      : "This profile is managed by another family member"}
                 >
-                  {candidate.canReuse ? "Use existing" : "Managed by another relative"}
+                  {hasNewChildDetails
+                    ? "Create new to include children"
+                    : candidate.canReuse ? "Use existing" : "Managed by another relative"}
                 </button>
               </div>
             ))}
@@ -4234,6 +4243,10 @@ function FamilyApp({ session }) {
       relationships,
       primary,
     );
+    const additions = newRelativeAdditionsFromForm(form);
+    const newChildAdditions = {
+      children: additions.children.filter((child) => child.new_person),
+    };
     if (!existing && !primary && !hasExistingConnection(connections)) {
       throw new Error(
         "Choose at least one existing parent, child, or partner, or add the optional direct relationship.",
@@ -4295,7 +4308,6 @@ function FamilyApp({ session }) {
     if (existing) {
       if (existing.isPlaceholder) details.fill_placeholder = true;
       const hasNewPartners = connections.partners.some((partner) => partner.new_person);
-      const additions = newRelativeAdditionsFromForm(form);
       const hasNewRelatives = hasNewPartners || additions.children.length > 0 || additions.siblings.length > 0;
       const editArgs = {
         p_member_id: existing.id,
@@ -4319,6 +4331,9 @@ function FamilyApp({ session }) {
     const bundle = { fallback: primary, ...connections };
 
     if (options.useExistingId) {
+      if (newChildAdditions.children.length) {
+        throw new Error("Create this person as a new record to add their new children in the same save.");
+      }
       const duplicate = people.find(
         (person) =>
           person.id === options.useExistingId &&
@@ -4338,12 +4353,20 @@ function FamilyApp({ session }) {
       return { reused: true };
     }
 
-    const memberResult = await supabase.rpc("create_family_relative", {
-      p_anchor_id: anchorPerson.id,
-      p_details: details,
-      p_bundle: bundle,
-      p_idempotency_key: form.idempotencyKey,
-    });
+    const memberResult = newChildAdditions.children.length
+      ? await supabase.rpc("create_family_relative_with_new_children", {
+          p_anchor_id: anchorPerson.id,
+          p_details: details,
+          p_bundle: bundle,
+          p_additions: newChildAdditions,
+          p_idempotency_key: form.idempotencyKey,
+        })
+      : await supabase.rpc("create_family_relative", {
+          p_anchor_id: anchorPerson.id,
+          p_details: details,
+          p_bundle: bundle,
+          p_idempotency_key: form.idempotencyKey,
+        });
     if (memberResult.error) throw memberResult.error;
 
     await refreshFamilyData();

@@ -96,6 +96,29 @@ test("serializes detailed child and sibling additions", () => {
   assert.equal(additions.siblings[0].has_different_parents, true);
 });
 
+test("keeps existing children in the creation bundle and new children in additions", () => {
+  const form = {
+    firstName: "Asha",
+    parentLinks: [],
+    partnerLinks: [],
+    childLinks: [
+      { mode: "existing", personId: "existing-child", variant: "biological" },
+      {
+        mode: "new",
+        personId: "",
+        newPerson: { firstName: "Maya", surname: "Sabnani", gender: "female" },
+        variant: "biological",
+      },
+    ],
+  };
+  const bundle = connectionBundleFromForm(form);
+  const additions = newRelativeAdditionsFromForm(form);
+
+  assert.deepEqual(bundle.children.map((child) => child.person_id), ["existing-child"]);
+  assert.equal(additions.children.find((child) => child.new_person)?.new_person.first_name, "Maya");
+  assert.equal(hasExistingConnection(bundle), true);
+});
+
 test("serializes a new named partner for atomic creation", () => {
   const bundle = connectionBundleFromForm({
     firstName: "Asha",

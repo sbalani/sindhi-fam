@@ -1,5 +1,11 @@
 # Vansh changelog
 
+## 0.17.5 - Create children while adding family
+
+- Added a Create new child option with inline personal details in the add-person popup.
+- Kept existing-person selection available in the same child control.
+- Saved the new person, each new child and their parent links in one authenticated transaction.
+
 ## 0.17.4 - Clearer family paths
 
 - Reduced avoidable family-tree crossings and connector lengths by ordering generations in both directions.

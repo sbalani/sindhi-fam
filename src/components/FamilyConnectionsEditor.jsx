@@ -64,6 +64,8 @@ export default function FamilyConnectionsEditor({
   allowAnchorCoParent = false,
   disabled = false,
   allowNewPeople = false,
+  allowNewChildren = allowNewPeople,
+  allowExistingChildCoParent = allowNewPeople,
   subjectName = "this person",
   excludedParentIds = [],
   excludedPartnerIds = [],
@@ -221,7 +223,7 @@ export default function FamilyConnectionsEditor({
       {childLinks && setChildLinks && (
         <fieldset className="family-context-group">
           <legend>Children of {subjectName}</legend>
-          <p>{allowNewPeople ? `Choose an existing person or create a new child of ${subjectName}.` : `Optional. Choose existing people for whom ${subjectName} is a parent.`}</p>
+          <p>{allowNewChildren ? `Choose an existing person or create a new child of ${subjectName}.` : `Optional. Choose existing people for whom ${subjectName} is a parent.`}</p>
           <div className="family-link-list">
             {childLinks.map((link, index) => (
               <div className="family-link-row parent-link-row" key={link.key}>
@@ -241,7 +243,7 @@ export default function FamilyConnectionsEditor({
                       .map((person) => (
                       <option value={person.id} key={person.id}>{person.name}</option>
                       ))}
-                    {allowNewPeople && <option value={NEW_PERSON}>Create a new child with details…</option>}
+                    {allowNewChildren && <option value={NEW_PERSON}>Create a new child with details…</option>}
                   </select>
                 </label>
                 <label>
@@ -258,7 +260,8 @@ export default function FamilyConnectionsEditor({
                     <option value="unspecified">Not specified</option>
                   </select>
                 </label>
-                {allowNewPeople && coParentCandidates.length > 0 && (
+                {allowNewChildren && coParentCandidates.length > 0 &&
+                  (link.mode === "new" || allowExistingChildCoParent) && (
                   <label>
                     Other parent <small>Optional</small>
                     <select disabled={disabled} value={link.coParentId || ""} onChange={(event) => updateChild(link.key, { coParentId: event.target.value })}>
@@ -313,7 +316,7 @@ export default function FamilyConnectionsEditor({
             disabled={disabled}
             onClick={() => setChildLinks((rows) => [...rows, {
               ...makeEmptyChildLink(),
-              mode: allowNewPeople ? "new" : "existing",
+              mode: allowNewChildren ? "new" : "existing",
             }])}
           >
             <Plus size={15} /> Add child
