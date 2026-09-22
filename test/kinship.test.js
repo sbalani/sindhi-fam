@@ -6,6 +6,8 @@ import {
   shortestRelationshipPath,
   deriveBranchLabel,
   dedupePeopleForDisplay,
+  buildTraditionalTreeLayout,
+  surnameSuggestionsFor,
 } from '../src/utils/kinship.js';
 
 const rel = (from, to, type='parent', variant='biological') => ({ from, to, type, variant });
@@ -65,4 +67,57 @@ test('display de-duplication uses linked account identity', () => {
     { id:'c', linkedUserId:null, personIdentityId:'i3' },
   ];
   assert.deepEqual(dedupePeopleForDisplay(people).map((person) => person.id), ['a','c']);
+});
+
+test('traditional layout keeps a current couple together with each sibling branch outside', () => {
+  const people = [
+    { id: 'a-sibling', firstName: 'A sibling', surname: 'One' },
+    { id: 'a', firstName: 'A', surname: 'One' },
+    { id: 'b', firstName: 'B', surname: 'Two' },
+    { id: 'b-sibling', firstName: 'B sibling', surname: 'Two' },
+  ];
+  const relationships = [
+    rel('a', 'b', 'spouse'),
+    rel('a', 'a-sibling', 'sibling'),
+    rel('b', 'b-sibling', 'sibling'),
+  ];
+  const { rows } = buildTraditionalTreeLayout(people, relationships, {});
+  assert.deepEqual(rows[0].units.map((unit) => unit.members.map((person) => person.id)), [
+    ['a-sibling'],
+    ['a', 'b'],
+    ['b-sibling'],
+  ]);
+});
+
+test('traditional layout pairs only one current partner and preserves remarriage edge', () => {
+  const people = ['p', 'current', 'former'].map((id) => ({ id, firstName: id, surname: 'Family' }));
+  const relationships = [
+    { ...rel('p', 'former', 'spouse'), status: 'former' },
+    { ...rel('p', 'current', 'spouse'), status: 'current' },
+  ];
+  const { rows, edges } = buildTraditionalTreeLayout(people, relationships, {});
+  assert.ok(rows[0].units.some((unit) => unit.members.map((person) => person.id).sort().join(':') === 'current:p'));
+  assert.ok(edges.some((edge) => edge.kind === 'partner'));
+});
+
+test('traditional edges retain the actual partner or parent card endpoint', () => {
+  const people = ['parent', 'partner', 'child'].map((id) => ({ id, firstName: id, surname: 'Family' }));
+  const relationships = [rel('parent', 'partner', 'spouse'), rel('parent', 'child')];
+  const { edges } = buildTraditionalTreeLayout(people, relationships, { parent: 0, partner: 0, child: 1 });
+  const parentEdge = edges.find((edge) => edge.kind === 'parent');
+  assert.equal(parentEdge.fromPersonId, 'parent');
+  assert.equal(parentEdge.toPersonId, 'child');
+});
+
+test('surname suggestions follow the selected anchor instead of the signed-in family', () => {
+  const people = [
+    { id: 'me', firstName: 'Me', surname: 'Self' },
+    { id: 'anchor', firstName: 'Anchor', surname: 'Branch' },
+    { id: 'partner', firstName: 'Partner', surname: 'PartnerSurname', maidenName: 'Earlier' },
+  ];
+  const relationships = [rel('anchor', 'partner', 'spouse')];
+  assert.deepEqual(
+    surnameSuggestionsFor('anchor', 'daughter', people, relationships),
+    ['Branch', 'PartnerSurname', 'Earlier'],
+  );
 });

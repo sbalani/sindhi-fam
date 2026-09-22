@@ -43,7 +43,14 @@ import AppErrorBoundary from "./components/AppErrorBoundary.jsx";
 import { LegalPage, SiteFooter } from "./components/LegalPages.jsx";
 import useUrlPage from "./hooks/useUrlPage.js";
 import useDialogAccessibility from "./hooks/useDialogAccessibility.js";
-import { parentIdsFor, siblingDetailsFor, deriveBranchLabel, shortestRelationshipPath } from "./utils/kinship.js";
+import {
+  buildTraditionalTreeLayout,
+  deriveBranchLabel,
+  parentIdsFor,
+  shortestRelationshipPath,
+  siblingDetailsFor,
+  surnameSuggestionsFor,
+} from "./utils/kinship.js";
 import { validatePersonForm } from "./utils/validation.js";
 import { matchesAnyField } from "./utils/sindhiSearch.js";
 import { NAME_ALIAS_KINDS } from "./utils/nameAliases.js";
@@ -66,7 +73,7 @@ const nav = [
   { id: "matches", label: "Connections", icon: Sparkles },
 ];
 
-const APP_VERSION = "0.16.0";
+const APP_VERSION = "0.17.0";
 
 const RELATION_OPTIONS = [
   {
@@ -317,6 +324,31 @@ const familyStateFromRows = (memberRows, relationshipRows, currentUserId) => {
     });
   return { people, relationships };
 };
+
+const sharedTreeStateFromSnapshot = (snapshot) => ({
+  ownerName: snapshot?.tree_owner_name || "Friend",
+  ownerMemberId: snapshot?.tree_owner_member_id || "",
+  viewerMemberId: snapshot?.viewer_member_id || "",
+  people: (snapshot?.people || []).map((person, index) => ({
+    id: person.id,
+    firstName: person.first_name,
+    surname: person.surname || "",
+    name: person.display_name,
+    initials: person.initials,
+    gender: person.gender || "unspecified",
+    isSelf: Boolean(person.is_viewer),
+    isPlaceholder: Boolean(person.is_placeholder),
+    color: colors[index % colors.length],
+  })),
+  relationships: (snapshot?.relationships || []).map((relationship) => ({
+    id: relationship.id,
+    from: relationship.from,
+    to: relationship.to,
+    type: relationship.type,
+    variant: relationship.variant || "unspecified",
+    status: relationship.status || "unspecified",
+  })),
+});
 
 function AuthScreen() {
   const [mode, setMode] = useState("signup");
@@ -1153,10 +1185,16 @@ function Tree({
   addUnknownSiblings,
   editPerson,
   openLinkPeople,
+  readOnly = false,
+  initialFocusId = "",
+  heading = "Your family, connected",
+  description = "Tap a person to open their profile. Use + to add someone directly around them, then focus, filter or zoom the graph for large families.",
+  originLabel = "me",
+  relationshipOriginId = "",
 }) {
   const [view, setView] = useState("traditional");
   const [degreeLimit, setDegreeLimit] = useState("2");
-  const [focusId, setFocusId] = useState(people.find((person) => person.isSelf)?.id || people[0]?.id || "");
+  const [focusId, setFocusId] = useState(initialFocusId || people.find((person) => person.isSelf)?.id || people[0]?.id || "");
   const [zoom, setZoom] = useState(1);
   const [generationFilter, setGenerationFilter] = useState("all");
   const [branchFilter, setBranchFilter] = useState("all");
@@ -1170,12 +1208,15 @@ function Tree({
   };
   const traditionalCanvasRef = useRef(null);
   const traditionalUnitRefs = useRef(new Map());
+  const traditionalPersonRefs = useRef(new Map());
   const [traditionalLines, setTraditionalLines] = useState({
     width: 0,
     height: 0,
     paths: [],
   });
-  const selfRoot = people.find((person) => person.isSelf) || people[0];
+  const selfRoot = relationshipOriginId
+    ? people.find((person) => person.id === relationshipOriginId)
+    : people.find((person) => person.isSelf) || people[0];
   const root = people.find((person) => person.id === focusId) || selfRoot;
   const levels = root ? { [root.id]: 0 } : {};
   for (let pass = 0; pass < people.length; pass += 1) {
@@ -1270,133 +1311,8 @@ function Tree({
   const focusPathLabel = focusPath.length > 1
     ? focusPath.map((id) => peopleById.get(id)?.firstName || "Unknown").join(" → ")
     : root?.id === selfRoot?.id ? "This is you" : "No recorded path";
-  const displayParents = new Map(
-    people.map((person) => [person.id, new Set()]),
-  );
-  relationships.forEach((relationship) => {
-    if (relationship.type === "parent")
-      displayParents.get(relationship.to)?.add(relationship.from);
-    if (relationship.type === "child")
-      displayParents.get(relationship.from)?.add(relationship.to);
-  });
-  // A sibling-only placeholder belongs in its known sibling's visual branch,
-  // without persisting inferred parent relationships.
-  for (let pass = 0; pass < people.length; pass += 1) {
-    relationships.forEach((relationship) => {
-      if (relationship.type !== "sibling") return;
-      const fromParents = displayParents.get(relationship.from);
-      const toParents = displayParents.get(relationship.to);
-      if (!fromParents || !toParents) return;
-      if (!fromParents.size && toParents.size)
-        toParents.forEach((parentId) => fromParents.add(parentId));
-      if (!toParents.size && fromParents.size)
-        fromParents.forEach((parentId) => toParents.add(parentId));
-    });
-  }
-  // Each person is rendered once. Partnerships are edges rather than a single
-  // two-person unit, so remarriage and multiple partners do not force one
-  // relationship to "win" the layout.
-  const assignedUnit = new Map();
-  const traditionalUnits = [];
-  const addUnit = (person) => {
-    if (!person || assignedUnit.has(person.id)) return;
-    const unit = {
-      id: person.id,
-      members: [person],
-      level: levels[person.id] ?? 0,
-    };
-    traditionalUnits.push(unit);
-    assignedUnit.set(person.id, unit.id);
-  };
-  treePeople.forEach(addUnit);
-  const directlyRelatedAsSiblings = (personAId, personBId) =>
-    relationships.some(
-      (relationship) =>
-        relationship.type === "sibling" &&
-        ((relationship.from === personAId && relationship.to === personBId) ||
-          (relationship.from === personBId && relationship.to === personAId)),
-    ) ||
-    [...(displayParents.get(personAId) || [])].some((parentId) =>
-      displayParents.get(personBId)?.has(parentId),
-    );
-  const unitRelatedToPerson = (unit, personId) =>
-    unit.members.some((member) =>
-      directlyRelatedAsSiblings(member.id, personId),
-    );
-  const orderGenerationUnits = (units) => {
-    const remaining = new Set(units.map((unit) => unit.id));
-    const ordered = [];
-    while (remaining.size) {
-      const available = units.filter((unit) => remaining.has(unit.id));
-      const anchor =
-        available.find((unit) => unit.members.length === 2) || available[0];
-      const left = anchor.members[0]
-        ? available.filter(
-            (unit) =>
-              unit.id !== anchor.id &&
-              unitRelatedToPerson(unit, anchor.members[0].id),
-          )
-        : [];
-      const leftIds = new Set(left.map((unit) => unit.id));
-      const right = anchor.members[1]
-        ? available.filter(
-            (unit) =>
-              unit.id !== anchor.id &&
-              !leftIds.has(unit.id) &&
-              unitRelatedToPerson(unit, anchor.members[1].id),
-          )
-        : [];
-      [...left, anchor, ...right].forEach((unit) => {
-        if (!remaining.has(unit.id)) return;
-        ordered.push(unit);
-        remaining.delete(unit.id);
-      });
-    }
-    return ordered;
-  };
-  const traditionalRows = Object.entries(
-    traditionalUnits.reduce((rows, unit) => {
-      rows[unit.level] ||= [];
-      rows[unit.level].push(unit);
-      return rows;
-    }, {}),
-  )
-    .map(([level, units]) => ({
-      level: Number(level),
-      units: orderGenerationUnits(units),
-    }))
-    .sort((a, b) => a.level - b.level);
-  const traditionalEdges = [];
-  const traditionalEdgeKeys = new Set();
-  traditionalUnits.forEach((childUnit) => {
-    childUnit.members.forEach((child) => {
-      displayParents.get(child.id)?.forEach((parentId) => {
-        const parentUnitId = assignedUnit.get(parentId);
-        if (!parentUnitId || parentUnitId === childUnit.id) return;
-        const key = `parent:${parentUnitId}:${childUnit.id}`;
-        if (traditionalEdgeKeys.has(key)) return;
-        traditionalEdgeKeys.add(key);
-        traditionalEdges.push({
-          key,
-          from: parentUnitId,
-          to: childUnit.id,
-          kind: "parent",
-        });
-      });
-    });
-  });
-  relationships
-    .filter((relationship) => ["spouse", "partner"].includes(relationship.type))
-    .forEach((relationship) => {
-      const from = assignedUnit.get(relationship.from);
-      const to = assignedUnit.get(relationship.to);
-      if (!from || !to || from === to) return;
-      const pair = [from, to].sort();
-      const key = `partner:${pair[0]}:${pair[1]}`;
-      if (traditionalEdgeKeys.has(key)) return;
-      traditionalEdgeKeys.add(key);
-      traditionalEdges.push({ key, from, to, kind: "partner" });
-    });
+  const { rows: traditionalRows, edges: traditionalEdges } =
+    buildTraditionalTreeLayout(treePeople, relationships, levels);
   const traditionalEdgesJson = JSON.stringify(traditionalEdges);
   const generationLabel = (level) => {
     if (level === 0) return "Your generation";
@@ -1418,36 +1334,42 @@ function Tree({
       window.cancelAnimationFrame(frame);
       frame = window.requestAnimationFrame(() => {
         const canvasRect = canvas.getBoundingClientRect();
+        const scale = canvas.offsetWidth ? canvasRect.width / canvas.offsetWidth : 1;
         const paths = measuredEdges.flatMap((edge) => {
-          const parent = traditionalUnitRefs.current.get(edge.from);
-          const child = traditionalUnitRefs.current.get(edge.to);
+          const parent = edge.fromPersonId
+            ? traditionalPersonRefs.current.get(edge.fromPersonId)
+            : traditionalUnitRefs.current.get(edge.from);
+          const child = edge.toPersonId
+            ? traditionalPersonRefs.current.get(edge.toPersonId)
+            : traditionalUnitRefs.current.get(edge.to);
           if (!parent || !child) return [];
           const parentRect = parent.getBoundingClientRect();
           const childRect = child.getBoundingClientRect();
           if (edge.kind === "partner") {
             const fromX =
-              parentRect.left + parentRect.width / 2 - canvasRect.left;
+              (parentRect.left + parentRect.width / 2 - canvasRect.left) / scale;
             const fromY =
-              parentRect.top + parentRect.height / 2 - canvasRect.top;
+              (parentRect.top + parentRect.height / 2 - canvasRect.top) / scale;
             const toX =
-              childRect.left + childRect.width / 2 - canvasRect.left;
+              (childRect.left + childRect.width / 2 - canvasRect.left) / scale;
             const toY =
-              childRect.top + childRect.height / 2 - canvasRect.top;
+              (childRect.top + childRect.height / 2 - canvasRect.top) / scale;
             return [
               {
                 key: edge.key,
                 kind: "partner",
                 from: edge.from,
                 to: edge.to,
+                pathKeys: edge.pathKeys,
                 d: `M ${fromX} ${fromY} L ${toX} ${toY}`,
               },
             ];
           }
           const fromX =
-            parentRect.left + parentRect.width / 2 - canvasRect.left;
-          const fromY = parentRect.bottom - canvasRect.top;
-          const toX = childRect.left + childRect.width / 2 - canvasRect.left;
-          const toY = childRect.top - canvasRect.top;
+            (parentRect.left + parentRect.width / 2 - canvasRect.left) / scale;
+          const fromY = (parentRect.bottom - canvasRect.top) / scale;
+          const toX = (childRect.left + childRect.width / 2 - canvasRect.left) / scale;
+          const toY = (childRect.top - canvasRect.top) / scale;
           const middleY = fromY + (toY - fromY) / 2;
           return [
             {
@@ -1455,6 +1377,7 @@ function Tree({
               kind: "parent",
               from: edge.from,
               to: edge.to,
+              pathKeys: edge.pathKeys,
               d: `M ${fromX} ${fromY} V ${middleY} H ${toX} V ${toY}`,
             },
           ];
@@ -1470,13 +1393,14 @@ function Tree({
     const observer = new ResizeObserver(updateLines);
     observer.observe(canvas);
     traditionalUnitRefs.current.forEach((element) => observer.observe(element));
+    traditionalPersonRefs.current.forEach((element) => observer.observe(element));
     window.addEventListener("resize", updateLines);
     return () => {
       window.cancelAnimationFrame(frame);
       observer.disconnect();
       window.removeEventListener("resize", updateLines);
     };
-  }, [people, relationships, traditionalEdgesJson, view]);
+  }, [people, relationships, traditionalEdgesJson, view, zoom]);
   const connectionLabels = (person) => {
     const names = (ids) =>
       ids
@@ -1533,12 +1457,17 @@ function Tree({
     <div
       className={`traditional-person ${person.isPlaceholder ? "placeholder-person" : ""} ${focusPath.includes(person.id) ? "path-highlight" : ""}`}
       key={person.id}
+      ref={(element) => {
+        if (element) traditionalPersonRefs.current.set(person.id, element);
+        else traditionalPersonRefs.current.delete(person.id);
+      }}
     >
       <button
         type="button"
         className="tree-person-edit"
-        onClick={() => editPerson(person)}
-        title={`Open ${person.name}'s profile`}
+        onClick={() => !readOnly && editPerson?.(person)}
+        disabled={readOnly}
+        title={readOnly ? person.name : `Open ${person.name}'s profile`}
       >
         <Avatar person={person} />
         <strong>
@@ -1552,15 +1481,15 @@ function Tree({
           ))}
         </div>
         {hasHalfSibling && <small className="half-sibling-badge">½ Half-sibling branch</small>}
-        <small className="edit-hint">Open profile</small>
+        {!readOnly && <small className="edit-hint">Open profile</small>}
       </button>
-      <button
+      {!readOnly && <button
         onClick={() => addRelative(person)}
         title={`Add relative to ${person.firstName}`}
       >
         <Plus size={12} /> Add
-      </button>
-      {!person.isPlaceholder && (
+      </button>}
+      {!readOnly && !person.isPlaceholder && (
         <button
           className="unknown-action"
           onClick={() => addUnknownSiblings(person)}
@@ -1593,10 +1522,8 @@ function Tree({
       <div className="section-heading">
         <div>
           <span className="eyebrow">RELATIONSHIP MAP</span>
-          <h1>Your family, connected</h1>
-          <p>
-            Tap a person to open their profile. Use + to add someone directly around them, then focus, filter or zoom the graph for large families.
-          </p>
+          <h1>{heading}</h1>
+          <p>{description}</p>
         </div>
         <div className="legend">
           <span>
@@ -1645,30 +1572,30 @@ function Tree({
           </select>
         </label>
         <div className="zoom-controls" aria-label="Tree zoom controls">
-          <button className="quiet" onClick={() => setZoom((value) => Math.max(.7, +(value - .15).toFixed(2)))} aria-label="Zoom out">−</button>
+          <button className="quiet" onClick={() => setZoom((value) => Math.max(.55, +(value - .15).toFixed(2)))} aria-label="Zoom out">−</button>
           <span>{Math.round(zoom * 100)}%</span>
           <button className="quiet" onClick={() => setZoom((value) => Math.min(2.2, +(value + .15).toFixed(2)))} aria-label="Zoom in">+</button>
           <button className="text-button" onClick={() => setZoom(1)}>Reset</button>
         </div>
         <div className="relationship-path-summary">
-          <strong>How is {root?.firstName || "this person"} related to me?</strong>
+          <strong>How is {root?.firstName || "this person"} related to {originLabel}?</strong>
           <span>{focusPathLabel}{focusPath.length > 1 ? ` · ${focusPath.length - 1} connection${focusPath.length === 2 ? "" : "s"}` : ""}</span>
         </div>
       </div>
-      <button className="link-existing-button" onClick={openLinkPeople}>
+      {!readOnly && <button className="link-existing-button" onClick={openLinkPeople}>
         <Link2 size={15} /> Link existing people
-      </button>
-      <div className="tree-help">
+      </button>}
+      {!readOnly && <div className="tree-help">
         <GitFork size={18} />
         <span>
           <strong>Build with familiar terms</strong>For Chacha, tap your father
           and choose Brother. For Dadi, tap your father and choose Mother. For
           Chachi, tap your uncle and choose Wife.
         </span>
-      </div>
+      </div>}
       {view === "traditional" && (
         <section className="traditional-tree tree-pan-viewport" onWheel={releaseVerticalWheel}>
-          <div className="traditional-canvas" ref={traditionalCanvasRef} style={{ width: `${Math.max(100, 100 * zoom)}%`, minHeight: `${Math.max(100, 100 * zoom)}%` }}>
+          <div className="traditional-canvas tree-zoom-stage" ref={traditionalCanvasRef} style={{ zoom }}>
             <svg
               className="traditional-connectors"
               width={traditionalLines.width}
@@ -1677,7 +1604,7 @@ function Tree({
               aria-hidden="true"
             >
               {traditionalLines.paths.map((path) => (
-                <path key={path.key} d={path.d} className={`${path.kind === "partner" ? "partner-line" : ""} ${focusPathPairs.has([path.from, path.to].sort().join(":")) ? "path-highlight-line" : ""}`} />
+                <path key={path.key} d={path.d} className={`${path.kind === "partner" ? "partner-line" : ""} ${path.pathKeys?.some((key) => focusPathPairs.has(key)) ? "path-highlight-line" : ""}`} />
               ))}
             </svg>
             {traditionalRows.map((row) => (
@@ -1723,7 +1650,7 @@ function Tree({
               <span>Live graph</span>
             </div>
             <div className="tree-pan-viewport network-pan-viewport">
-            <div className="family-map" style={{ width: `${Math.max(100, 100 * zoom)}%`, minHeight: `${Math.max(600, 600 * zoom)}px` }}>
+            <div className="family-map tree-zoom-stage" style={{ zoom }}>
               <svg
                 viewBox="0 0 100 100"
                 preserveAspectRatio="none"
@@ -1765,8 +1692,9 @@ function Tree({
                     <button
                       type="button"
                       className="map-person-edit"
-                      onClick={() => editPerson(person)}
-                      title={`Open ${person.name}'s profile`}
+                      onClick={() => !readOnly && editPerson?.(person)}
+                      disabled={readOnly}
+                      title={readOnly ? person.name : `Open ${person.name}'s profile`}
                     >
                       <Avatar person={person} />
                       <strong>
@@ -1780,14 +1708,14 @@ function Tree({
                       </span>
                       {siblingDetailsFor(person.id, relationships).some((item) => item.kind === "half") && <small className="half-sibling-badge">½ half-sibling</small>}
                     </button>
-                    <button
+                    {!readOnly && <button
                       className="map-add"
                       onClick={() => addRelative(person)}
                       title={`Add a relative connected to ${person.firstName}`}
                     >
                       <Plus size={13} />
-                    </button>
-                    {!person.isPlaceholder && (
+                    </button>}
+                    {!readOnly && !person.isPlaceholder && (
                       <button
                         className="map-gap"
                         onClick={() => addUnknownSiblings(person)}
@@ -1845,11 +1773,21 @@ function Connections({
   respondInbox,
   revokeInvite,
   resendInvite,
+  friendCode = "",
+  friendships = [],
+  requestFriend,
+  respondFriend,
+  cancelFriend,
+  removeFriend,
+  setFriendSharing,
+  viewFriendTree,
+  rotateFriendCode,
 }) {
   const [reviewingFamily, setReviewingFamily] = useState(null);
   const [reviewingIdentity, setReviewingIdentity] = useState(null);
   const [busyId, setBusyId] = useState("");
   const [error, setError] = useState("");
+  const [friendCodeInput, setFriendCodeInput] = useState("");
   const reviewDialogRef = useDialogAccessibility(() => { setReviewingIdentity(null); setReviewingFamily(null); }, Boolean(reviewingIdentity || reviewingFamily));
   const incoming = inbox.filter(
     (item) => item.direction === "incoming" && item.status === "pending",
@@ -1857,6 +1795,8 @@ function Connections({
   const activity = inbox.filter(
     (item) => !(item.direction === "incoming" && item.status === "pending"),
   );
+  const pendingFriends = friendships.filter((item) => item.status === "pending");
+  const acceptedFriends = friendships.filter((item) => item.status === "accepted");
 
   const act = async (id, action) => {
     setBusyId(id);
@@ -1884,6 +1824,69 @@ function Connections({
       </div>
 
       {error && <div className="auth-message">{error}</div>}
+
+      <section className="connection-section friends-section">
+        <div className="subsection-heading">
+          <div>
+            <span className="mini-title">FRIENDS</span>
+            <h2>Connect without merging family trees</h2>
+            <p>Share this exact code privately. Friendship and tree sharing are separate decisions.</p>
+          </div>
+        </div>
+        <div className="friend-code-grid">
+          <div className="panel friend-code-card">
+            <strong>Your private friend code</strong>
+            <code>{friendCode || "Loading..."}</code>
+            <div className="request-actions">
+              <button type="button" className="quiet" disabled={!friendCode} onClick={() => navigator.clipboard.writeText(friendCode)}>Copy code</button>
+              <button type="button" className="text-button" disabled={Boolean(busyId)} onClick={() => act("rotate-friend-code", rotateFriendCode)}>Rotate code</button>
+            </div>
+          </div>
+          <form className="panel friend-add-form" onSubmit={(event) => {
+            event.preventDefault();
+            act("add-friend", async () => {
+              await requestFriend(friendCodeInput.trim());
+              setFriendCodeInput("");
+            });
+          }}>
+            <label htmlFor="friend-code-input">Add a friend by their exact code</label>
+            <input id="friend-code-input" required value={friendCodeInput} onChange={(event) => setFriendCodeInput(event.target.value)} placeholder="00000000-0000-0000-0000-000000000000" />
+            <button className="primary" disabled={busyId === "add-friend"}>
+              {busyId === "add-friend" ? <LoaderCircle className="spin" size={15} /> : <UserPlus size={15} />} Send request
+            </button>
+          </form>
+        </div>
+        {pendingFriends.length > 0 && (
+          <div className="request-list friend-request-list">
+            {pendingFriends.map((item) => (
+              <article className="request-card slim" key={item.friendship_id}>
+                <div><strong>{item.counterpart_name}</strong><span>{item.direction === "incoming" ? "Wants to be friends" : "Friend request sent"}</span></div>
+                <div className="request-actions">
+                  {item.direction === "incoming" ? <>
+                    <button className="quiet" disabled={busyId === item.friendship_id} onClick={() => act(item.friendship_id, () => respondFriend(item, false))}>Decline</button>
+                    <button className="primary" disabled={busyId === item.friendship_id} onClick={() => act(item.friendship_id, () => respondFriend(item, true))}>Accept</button>
+                  </> : <button className="quiet" disabled={busyId === item.friendship_id} onClick={() => act(item.friendship_id, () => cancelFriend(item))}>Cancel</button>}
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
+        <div className="friend-list">
+          {acceptedFriends.map((item) => (
+            <article className="panel friend-card" key={item.friendship_id}>
+              <div><Avatar person={{ name: item.counterpart_name, initials: item.counterpart_name.split(/\s+/).map((part) => part[0]).slice(0, 2).join("").toUpperCase(), color: "teal" }} /><div><h3>{item.counterpart_name}</h3><span>{item.their_tree_shared ? "Shared their tree with you" : "Tree remains private"}</span></div></div>
+              <label className="friend-share-toggle"><input type="checkbox" checked={item.my_tree_shared} disabled={busyId === item.friendship_id} onChange={(event) => act(item.friendship_id, () => setFriendSharing(item, event.target.checked))} /> Share my tree</label>
+              <div className="request-actions">
+                <button className="primary" disabled={!item.can_view_their_tree || busyId === item.friendship_id} onClick={() => act(item.friendship_id, () => viewFriendTree(item))}>View shared tree</button>
+                <button className="text-button danger-text" disabled={busyId === item.friendship_id} onClick={() => {
+                  if (window.confirm(`Remove ${item.counterpart_name} from your friends?`)) act(item.friendship_id, () => removeFriend(item));
+                }}>Remove</button>
+              </div>
+            </article>
+          ))}
+        </div>
+        {!pendingFriends.length && !acceptedFriends.length && <div className="panel empty compact-empty"><HeartHandshake size={24} /><h3>No friends yet</h3><p>Exchange private codes with someone you know to connect.</p></div>}
+      </section>
 
       <section className="connection-section">
         <div className="subsection-heading">
@@ -2263,6 +2266,24 @@ function Connections({
         </div>
       )}
     </div>
+  );
+}
+
+function SharedFriendTreeModal({ tree, close }) {
+  return (
+    <AccessibleModal close={close} className="shared-tree-modal" label={`${tree.ownerName}'s shared family tree`}>
+        <button className="modal-close" onClick={close} aria-label="Close shared tree"><X /></button>
+        <Tree
+          people={tree.people}
+          relationships={tree.relationships}
+          readOnly
+          initialFocusId={tree.ownerMemberId}
+          relationshipOriginId={tree.viewerMemberId || "not-recorded-in-this-tree"}
+          originLabel="your recorded profile"
+          heading={`${tree.ownerName}'s shared tree`}
+          description="This is a privacy-filtered, read-only view. Private people and sensitive dates, places, identity fields, and evidence are not included."
+        />
+    </AccessibleModal>
   );
 }
 
@@ -3141,6 +3162,12 @@ function PersonModal({
   };
   const initialRelation = draft?.relation || "father";
   const initialAnchorId = draft?.anchorId || initialAnchor?.id || "";
+  const initialSurnameSuggestions = surnameSuggestionsFor(
+    initialAnchorId,
+    initialRelation,
+    people,
+    relationships,
+  );
   const initialParentLinks = person
     ? parentLinksFor(person.id)
     : suggestedParentLinks(initialAnchorId, initialRelation);
@@ -3149,7 +3176,7 @@ function PersonModal({
   const [form, setForm] = useState({
     firstName: person?.firstName || draft?.firstName || "",
     nickname: person?.nickname || "",
-    surname: person?.surname || draft?.surname || anchor?.surname || "",
+    surname: person?.surname || draft?.surname || initialSurnameSuggestions[0] || "",
     maidenName: person?.maidenName || "",
     alternateNames: person?.alternateNames || [],
     birthDate: person?.birthDate || "",
@@ -3180,6 +3207,7 @@ function PersonModal({
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [duplicateCandidates, setDuplicateCandidates] = useState([]);
+  const [surnameTouched, setSurnameTouched] = useState(Boolean(person || draft?.surname));
   const update = (e) => setForm({ ...form, [e.target.name]: e.target.value });
   const addAlternateName = () =>
     setForm((current) => ({
@@ -3204,6 +3232,9 @@ function PersonModal({
       ...current,
       relation: relation.value,
       gender: relation.gender,
+      surname: surnameTouched
+        ? current.surname
+        : surnameSuggestionsFor(current.anchorId, relation.value, people, relationships)[0] || "",
       parentLinks: ensureTwoParentRows(suggestedParentLinks(current.anchorId, relation.value)),
       ...relationSwitchValues(relation.type),
     }));
@@ -3213,11 +3244,15 @@ function PersonModal({
     setForm((current) => ({
       ...current,
       anchorId,
+      surname: surnameTouched
+        ? current.surname
+        : surnameSuggestionsFor(anchorId, current.relation, people, relationships)[0] || "",
       parentLinks: ensureTwoParentRows(suggestedParentLinks(anchorId, current.relation)),
     }));
   };
   const anchorPerson = people.find((item) => item.id === form.anchorId) || anchor;
   const selectedRelation = RELATION_OPTIONS.find((option) => option.value === form.relation);
+  const surnameSuggestions = surnameSuggestionsFor(form.anchorId, form.relation, people, relationships);
   const contextOwnerId = person?.ownerId || anchorPerson?.ownerId;
   const contextPeople = people.filter((item) => !contextOwnerId || item.ownerId === contextOwnerId);
   const submit = async (e) => {
@@ -3315,9 +3350,19 @@ function PersonModal({
                   required
                   name="surname"
                   value={form.surname}
-                  onChange={update}
+                  onChange={(event) => {
+                    setSurnameTouched(true);
+                    update(event);
+                  }}
+                  list="family-surname-suggestions"
                   placeholder="e.g. Vaswani"
                 />
+                <datalist id="family-surname-suggestions">
+                  {surnameSuggestions.map((surname) => <option value={surname} key={surname} />)}
+                </datalist>
+                {!person && surnameSuggestions.length > 0 && (
+                  <small className="field-hint">Suggested from {anchorPerson?.firstName || "nearby family"}: {surnameSuggestions.join(", ")}</small>
+                )}
               </label>
               <label>
                 Nickname <small>Optional</small>
@@ -3745,6 +3790,9 @@ function FamilyApp({ session }) {
   const [inbox, setInbox] = useState([]);
   const [familyUpdates, setFamilyUpdates] = useState([]);
   const [invitationActivity, setInvitationActivity] = useState([]);
+  const [friendCode, setFriendCode] = useState("");
+  const [friendships, setFriendships] = useState([]);
+  const [sharedFriendTree, setSharedFriendTree] = useState(null);
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(true);
   const [dataError, setDataError] = useState("");
@@ -3816,12 +3864,14 @@ function FamilyApp({ session }) {
         }
         return;
       }
-      const [matchResult, identityResult, inboxResult, invitationResult, familyUpdateResult] = await Promise.all([
+      const [matchResult, identityResult, inboxResult, invitationResult, familyUpdateResult, friendCodeResult, friendshipResult] = await Promise.all([
         supabase.rpc("find_family_matches"),
         supabase.rpc("find_identity_claim_candidates"),
         supabase.rpc("get_verification_inbox"),
         supabase.rpc("get_my_invitation_activity"),
         supabase.rpc("get_family_update_notifications"),
+        supabase.rpc("get_my_friend_discovery_code"),
+        supabase.rpc("get_friendships"),
       ]);
       if (!active) return;
       setProfile(profileResult.data);
@@ -3879,6 +3929,8 @@ function FamilyApp({ session }) {
       setInbox(inboxResult.data || []);
       setInvitationActivity(invitationResult.data || []);
       if (!familyUpdateResult.error) setFamilyUpdates(familyUpdateResult.data || []);
+      if (!friendCodeResult.error) setFriendCode(friendCodeResult.data || "");
+      if (!friendshipResult.error) setFriendships(friendshipResult.data || []);
       setLoading(false);
     };
     loadFamily().catch((loadError) => {
@@ -3917,12 +3969,13 @@ function FamilyApp({ session }) {
   };
 
   const refreshTrustData = async () => {
-    const [matchResult, identityResult, inboxResult, invitationResult, familyUpdateResult] = await Promise.all([
+    const [matchResult, identityResult, inboxResult, invitationResult, familyUpdateResult, friendshipResult] = await Promise.all([
       supabase.rpc("find_family_matches"),
       supabase.rpc("find_identity_claim_candidates"),
       supabase.rpc("get_verification_inbox"),
       supabase.rpc("get_my_invitation_activity"),
       supabase.rpc("get_family_update_notifications"),
+      supabase.rpc("get_friendships"),
     ]);
     if (!matchResult.error)
       setMatches(
@@ -3977,7 +4030,28 @@ function FamilyApp({ session }) {
     if (!inboxResult.error) setInbox(inboxResult.data || []);
     if (!invitationResult.error) setInvitationActivity(invitationResult.data || []);
     if (!familyUpdateResult.error) setFamilyUpdates(familyUpdateResult.data || []);
+    if (!friendshipResult.error) setFriendships(friendshipResult.data || []);
   };
+
+  useEffect(() => {
+    if (page !== "matches") return undefined;
+    let active = true;
+    const refreshFriends = async () => {
+      const result = await supabase.rpc("get_friendships");
+      if (active && !result.error) setFriendships(result.data || []);
+    };
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void refreshFriends();
+    };
+    void refreshFriends();
+    window.addEventListener("focus", refreshFriends);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      active = false;
+      window.removeEventListener("focus", refreshFriends);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [page]);
 
   const refreshFamilyData = async () => {
     try {
@@ -4259,6 +4333,55 @@ function FamilyApp({ session }) {
     await refreshFamilyData();
   };
 
+  const requestFriend = async (code) => {
+    const result = await supabase.rpc("request_friend_by_code", { p_code: code });
+    if (result.error) throw result.error;
+    await refreshTrustData();
+  };
+
+  const respondFriend = async (friendship, accept) => {
+    const result = await supabase.rpc("respond_friend_request", {
+      p_friendship_id: friendship.friendship_id,
+      p_accept: accept,
+    });
+    if (result.error) throw result.error;
+    await refreshTrustData();
+  };
+
+  const cancelFriend = async (friendship) => {
+    const result = await supabase.rpc("cancel_friend_request", { p_friendship_id: friendship.friendship_id });
+    if (result.error) throw result.error;
+    await refreshTrustData();
+  };
+
+  const removeFriend = async (friendship) => {
+    const result = await supabase.rpc("remove_friend", { p_friendship_id: friendship.friendship_id });
+    if (result.error) throw result.error;
+    await refreshTrustData();
+  };
+
+  const setFriendSharing = async (friendship, enabled) => {
+    const result = await supabase.rpc("set_friend_tree_sharing", {
+      p_friendship_id: friendship.friendship_id,
+      p_enabled: enabled,
+    });
+    if (result.error) throw result.error;
+    await refreshTrustData();
+  };
+
+  const viewFriendTree = async (friendship) => {
+    const result = await supabase.rpc("get_shared_friend_tree", { p_friendship_id: friendship.friendship_id });
+    if (result.error) throw result.error;
+    setSharedFriendTree(sharedTreeStateFromSnapshot(result.data));
+  };
+
+  const rotateFriendCode = async () => {
+    if (!window.confirm("Rotate your friend code? The current code will stop working.")) return;
+    const result = await supabase.rpc("rotate_my_friend_discovery_code");
+    if (result.error) throw result.error;
+    setFriendCode(result.data || "");
+  };
+
   const mergePeople = async (keepId, mergeId, fieldChoices) => {
     const result = await supabase.rpc("merge_family_members", {
       p_keep_id: keepId,
@@ -4520,7 +4643,9 @@ function FamilyApp({ session }) {
     );
   const notificationCount = inbox.filter(
     (item) => item.direction === "incoming" && item.status === "pending",
-  ).length + familyUpdates.filter((item) => !item.read_at).length;
+  ).length + familyUpdates.filter((item) => !item.read_at).length + friendships.filter(
+    (item) => item.direction === "incoming" && item.status === "pending",
+  ).length;
 
   if (dataError)
     return (
@@ -4644,6 +4769,15 @@ function FamilyApp({ session }) {
             respondInbox={respondInbox}
             revokeInvite={revokeInvite}
             resendInvite={resendInvite}
+            friendCode={friendCode}
+            friendships={friendships}
+            requestFriend={requestFriend}
+            respondFriend={respondFriend}
+            cancelFriend={cancelFriend}
+            removeFriend={removeFriend}
+            setFriendSharing={setFriendSharing}
+            viewFriendTree={viewFriendTree}
+            rotateFriendCode={rotateFriendCode}
           />
         )}
         <SiteFooter className="app-site-footer" />
@@ -4713,6 +4847,7 @@ function FamilyApp({ session }) {
           dismissIdentity={dismissIdentity}
         />
       )}
+      {sharedFriendTree && <SharedFriendTreeModal tree={sharedFriendTree} close={() => setSharedFriendTree(null)} />}
       {showVoice && (
         <VoiceFamilyImport
           people={people}

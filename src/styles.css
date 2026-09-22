@@ -1691,6 +1691,14 @@ header {
   min-width: 100%;
   padding: 22px 30px 28px;
 }
+.tree-zoom-stage {
+  transform-origin: top left;
+}
+.field-hint {
+  color: var(--muted);
+  font-size: 8px;
+  line-height: 1.35;
+}
 .traditional-connectors {
   position: absolute;
   inset: 0;
@@ -2805,6 +2813,79 @@ header {
 .relationship-path-summary span { color: var(--muted); font-size: 12px; }
 .tree-pan-viewport { overflow: auto; overscroll-behavior: contain; max-width: 100%; }
 .network-pan-viewport { max-height: 70vh; border-radius: 12px; }
+.network-pan-viewport .family-map { width: 100%; min-width: 760px; min-height: 600px; }
+.friend-code-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, .8fr);
+  gap: 14px;
+  margin-bottom: 14px;
+}
+.friend-code-card,
+.friend-add-form {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+}
+.friend-code-card code {
+  overflow-wrap: anywhere;
+  padding: 10px 12px;
+  border: 1px dashed #a9bdb7;
+  border-radius: 8px;
+  background: #f4f8f6;
+  color: #285e53;
+  font-size: 12px;
+  user-select: all;
+}
+.friend-add-form label {
+  color: #344f48;
+  font-size: 11px;
+  font-weight: 700;
+}
+.friend-add-form input {
+  width: 100%;
+  min-width: 0;
+}
+.friend-add-form .primary { justify-self: start; }
+.friend-request-list { margin: 14px 0; }
+.friend-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(270px, 1fr));
+  gap: 14px;
+}
+.friend-card { display: grid; gap: 14px; }
+.friend-card > div:first-child {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.friend-card h3 { margin: 0 0 3px; }
+.friend-card span { color: var(--muted); font-size: 10px; }
+.friend-share-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #365b53;
+  font-size: 11px;
+  font-weight: 700;
+}
+.friend-share-toggle input { accent-color: #35665c; }
+.shared-tree-modal {
+  position: relative;
+  z-index: 2;
+  width: min(1200px, 96vw);
+  max-height: 94vh;
+  overflow: auto;
+  border-radius: 16px;
+  background: #f7f5ef;
+  box-shadow: 0 24px 80px #10231f42;
+}
+.shared-tree-modal > .modal-close { position: sticky; float: right; top: 12px; margin: 12px 12px -54px 0; z-index: 8; }
+.shared-tree-modal .inner-page { padding-top: 34px; }
+
+@media (max-width: 700px) {
+  .friend-code-grid { grid-template-columns: 1fr; }
+  .shared-tree-modal { width: 100%; max-height: 98vh; border-radius: 12px; }
+}
 .path-highlight { outline: 2px solid #d69e53; outline-offset: 3px; border-radius: 10px; }
 .family-map svg .path-highlight-line,
 .traditional-connectors .path-highlight-line { stroke: #d18d38 !important; stroke-width: 1.2 !important; }
