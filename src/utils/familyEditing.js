@@ -28,6 +28,46 @@ export const ensureTwoParentRows = (links = []) => {
   return rows;
 };
 
+const parentLinkFromRelationship = (relationship, key = relationship.id) => ({
+  key,
+  relationshipId: key === relationship.id ? relationship.id : null,
+  mode: "existing",
+  personId: relationship.from,
+  variant: relationship.variant || "biological",
+  confidence: relationship.confidence || "reported",
+  provenanceNote: relationship.provenanceNote || "",
+  placeholderLabel: "",
+  placeholderGender: "unspecified",
+});
+
+export const parentLinksForMember = (personId, relationships) => {
+  const directParents = relationships.filter(
+    (relationship) => relationship.type === "parent" && relationship.to === personId,
+  );
+  if (directParents.length) return directParents.map((relationship) => parentLinkFromRelationship(relationship));
+
+  const siblingIds = new Set(
+    relationships
+      .filter(
+        (relationship) =>
+          relationship.type === "sibling" &&
+          relationship.variant !== "half" &&
+          (relationship.from === personId || relationship.to === personId),
+      )
+      .map((relationship) => relationship.from === personId ? relationship.to : relationship.from),
+  );
+  const seen = new Set();
+  return relationships
+    .filter((relationship) => relationship.type === "parent" && siblingIds.has(relationship.to))
+    .filter((relationship) => {
+      if (seen.has(relationship.from)) return false;
+      seen.add(relationship.from);
+      return true;
+    })
+    .slice(0, 2)
+    .map((relationship) => parentLinkFromRelationship(relationship, `suggested-sibling-${relationship.id}`));
+};
+
 const connectionPerson = (link, fallbackLabel) =>
   link.mode === "placeholder"
     ? {

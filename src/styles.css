@@ -1699,6 +1699,20 @@ header {
   font-size: 8px;
   line-height: 1.35;
 }
+.family-context-suggestion {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 10px 12px;
+  border: 1px solid #c8dad4;
+  border-radius: 9px;
+  background: #eef6f3;
+  color: #44635c;
+  font-size: 10px;
+  line-height: 1.45;
+}
+.family-context-suggestion svg { flex: none; color: #35665c; }
+.family-context-suggestion strong { display: block; color: #28534a; }
 .traditional-connectors {
   position: absolute;
   inset: 0;

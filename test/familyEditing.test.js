@@ -6,6 +6,7 @@ import {
   primaryConnectionFromForm,
   correctionPayloadChanged,
   loadConnectionSnapshots,
+  parentLinksForMember,
   relationSwitchValues,
   relationshipRpcArgs,
 } from "../src/utils/familyEditing.js";
@@ -81,6 +82,25 @@ test("excludes a child primary edge duplicated by suggested parent links", () =>
     primary,
   );
   assert.deepEqual(bundle.parents.map((parent) => parent.person_id), ["co-parent"]);
+});
+
+test("prefills an unfilled reported sibling with the recorded sibling's parents", () => {
+  const relationships = [
+    { id: "s", from: "aunt", to: "father", type: "sibling", variant: "reported" },
+    { id: "p1", from: "grandmother", to: "father", type: "parent", variant: "biological" },
+    { id: "p2", from: "grandfather", to: "father", type: "parent", variant: "biological" },
+  ];
+  const links = parentLinksForMember("aunt", relationships);
+  assert.deepEqual(links.map((link) => link.personId), ["grandmother", "grandfather"]);
+  assert.ok(links.every((link) => link.relationshipId === null));
+});
+
+test("does not guess both parents for a half sibling", () => {
+  const relationships = [
+    { id: "s", from: "aunt", to: "father", type: "sibling", variant: "half" },
+    { id: "p1", from: "grandmother", to: "father", type: "parent", variant: "biological" },
+  ];
+  assert.deepEqual(parentLinksForMember("aunt", relationships), []);
 });
 
 test("rejects inconsistent partnership dates before calling the RPC", () => {

@@ -59,6 +59,7 @@ import {
   correctionSubmissionOutcome,
   ensureTwoParentRows,
   loadConnectionSnapshots,
+  parentLinksForMember,
   primaryConnectionFromForm,
   relationSwitchValues,
   relationshipRpcArgs,
@@ -3085,20 +3086,6 @@ function PersonModal({
   const dialogRef = useDialogAccessibility(close);
   const initialAnchor =
     anchor || people.find((item) => item.isSelf) || people[0] || null;
-  const parentLinksFor = (personId) =>
-    relationships
-      .filter((item) => item.type === "parent" && item.to === personId)
-      .map((item) => ({
-        key: item.id,
-        relationshipId: item.id,
-        mode: "existing",
-        personId: item.from,
-        variant: item.variant || "biological",
-        confidence: item.confidence || "reported",
-        provenanceNote: item.provenanceNote || "",
-        placeholderLabel: "",
-        placeholderGender: "unspecified",
-      }));
   const partnerLinksFor = (personId) =>
     relationships
       .filter(
@@ -3169,8 +3156,13 @@ function PersonModal({
     relationships,
   );
   const initialParentLinks = person
-    ? parentLinksFor(person.id)
+    ? parentLinksForMember(person.id, relationships)
     : suggestedParentLinks(initialAnchorId, initialRelation);
+  const parentsSuggestedFromSibling = Boolean(
+    person &&
+    initialParentLinks.length &&
+    !relationships.some((item) => item.type === "parent" && item.to === person.id),
+  );
   const initialPartnerLinks = person ? partnerLinksFor(person.id) : [];
   const [step, setStep] = useState(initialStep);
   const [form, setForm] = useState({
@@ -3571,6 +3563,12 @@ function PersonModal({
                     </label>
                   )}
                 </>
+              )}
+              {parentsSuggestedFromSibling && (
+                <div className="family-context-suggestion wide">
+                  <GitFork size={16} />
+                  <span><strong>Parents pre-filled from the recorded sibling relationship.</strong> Confirm these are also {person.firstName}&apos;s parents before saving.</span>
+                </div>
               )}
               <FamilyConnectionsEditor
                 people={contextPeople}
