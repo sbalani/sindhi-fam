@@ -1,5 +1,14 @@
 # Vansh changelog
 
+## 0.17.0 - Private friends and clearer family trees
+
+- Added exact-code friend requests with independent, reciprocal tree-sharing controls.
+- Added privacy-filtered, read-only friend trees and recorded relationship paths when both people exist in the shared graph.
+- Kept friendship separate from family matching, identity claims, genealogy editing and raw family-table access.
+- Grouped current couples while preserving precise parent and remarriage edge endpoints.
+- Added anchor-aware surname suggestions and functional mobile tree zoom-out.
+- Added migrations `20260922075915_add_private_friendships.sql` and `20260922080805_harden_friend_tree_privacy.sql`.
+
 ## 0.16.0 - Voice import and family chronology
 
 - Replaced the one-relative voice helper with a review-first, multi-person family-story import.
