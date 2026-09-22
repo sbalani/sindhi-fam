@@ -1,5 +1,11 @@
 # Vansh changelog
 
+## 0.17.1 - Clearer relationship editing and tree navigation
+
+- Added atomic creation of a fully named spouse or partner from an existing person's connection editor.
+- Clarified that the parent rows belong to the new person and removed direct anchors and descendants from cycle-prone choices.
+- Added middle-mouse drag panning to both desktop family-tree views.
+
 ## 0.17.0 - Private friends and clearer family trees
 
 - Added exact-code friend requests with independent, reciprocal tree-sharing controls.

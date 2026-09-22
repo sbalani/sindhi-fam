@@ -74,7 +74,7 @@ const nav = [
   { id: "matches", label: "Connections", icon: Sparkles },
 ];
 
-const APP_VERSION = "0.17.0";
+const APP_VERSION = "0.17.1";
 
 const RELATION_OPTIONS = [
   {
@@ -1207,6 +1207,45 @@ function Tree({
     event.preventDefault();
     window.scrollBy({ top: event.deltaY, behavior: "auto" });
   };
+  const middlePan = useRef(null);
+  const startMiddlePan = (event) => {
+    if (event.button !== 1) return;
+    event.preventDefault();
+    const viewport = event.currentTarget;
+    viewport.setPointerCapture(event.pointerId);
+    viewport.classList.add("middle-panning");
+    middlePan.current = {
+      viewport,
+      pointerId: event.pointerId,
+      x: event.clientX,
+      y: event.clientY,
+      scrollLeft: viewport.scrollLeft,
+      scrollTop: viewport.scrollTop,
+    };
+  };
+  const moveMiddlePan = (event) => {
+    const pan = middlePan.current;
+    if (!pan || pan.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    pan.viewport.scrollLeft = pan.scrollLeft - (event.clientX - pan.x);
+    pan.viewport.scrollTop = pan.scrollTop - (event.clientY - pan.y);
+  };
+  const stopMiddlePan = (event) => {
+    const pan = middlePan.current;
+    if (!pan || pan.pointerId !== event.pointerId) return;
+    pan.viewport.classList.remove("middle-panning");
+    if (pan.viewport.hasPointerCapture(event.pointerId)) pan.viewport.releasePointerCapture(event.pointerId);
+    middlePan.current = null;
+  };
+  const middlePanProps = {
+    onPointerDown: startMiddlePan,
+    onPointerMove: moveMiddlePan,
+    onPointerUp: stopMiddlePan,
+    onPointerCancel: stopMiddlePan,
+    onAuxClick: (event) => {
+      if (event.button === 1) event.preventDefault();
+    },
+  };
   const traditionalCanvasRef = useRef(null);
   const traditionalUnitRefs = useRef(new Map());
   const traditionalPersonRefs = useRef(new Map());
@@ -1595,7 +1634,7 @@ function Tree({
         </span>
       </div>}
       {view === "traditional" && (
-        <section className="traditional-tree tree-pan-viewport" onWheel={releaseVerticalWheel}>
+        <section className="traditional-tree tree-pan-viewport" onWheel={releaseVerticalWheel} {...middlePanProps}>
           <div className="traditional-canvas tree-zoom-stage" ref={traditionalCanvasRef} style={{ zoom }}>
             <svg
               className="traditional-connectors"
@@ -1650,7 +1689,7 @@ function Tree({
               <Network size={16} /> Interactive family map{" "}
               <span>Live graph</span>
             </div>
-            <div className="tree-pan-viewport network-pan-viewport">
+            <div className="tree-pan-viewport network-pan-viewport" {...middlePanProps}>
             <div className="family-map tree-zoom-stage" style={{ zoom }}>
               <svg
                 viewBox="0 0 100 100"
@@ -3123,13 +3162,6 @@ function PersonModal({
       }));
     if (relation?.type === "sibling") return anchorParents;
     if (relation?.type === "parent" && relation?.direction === "from-anchor") {
-      const anchorParent = {
-        key: `anchor-parent-${anchorId}`,
-        relationshipId: null,
-        mode: "existing",
-        personId: anchorId,
-        variant: "biological",
-      };
       const coParents = relationships
         .filter(
           (item) =>
@@ -3143,7 +3175,7 @@ function PersonModal({
           personId: item.from === anchorId ? item.to : item.from,
           variant: "biological",
         }));
-      return [anchorParent, ...coParents];
+      return coParents;
     }
     return [];
   };
@@ -3247,6 +3279,23 @@ function PersonModal({
   const surnameSuggestions = surnameSuggestionsFor(form.anchorId, form.relation, people, relationships);
   const contextOwnerId = person?.ownerId || anchorPerson?.ownerId;
   const contextPeople = people.filter((item) => !contextOwnerId || item.ownerId === contextOwnerId);
+  const descendantIds = new Set();
+  const descendantRootId = person?.id || anchorPerson?.id;
+  if (descendantRootId) {
+    const queue = [descendantRootId];
+    while (queue.length) {
+      const parentId = queue.shift();
+      relationships
+        .filter((relationship) => relationship.type === "parent" && relationship.from === parentId)
+        .forEach((relationship) => {
+          if (descendantIds.has(relationship.to)) return;
+          descendantIds.add(relationship.to);
+          queue.push(relationship.to);
+        });
+    }
+  }
+  const directAnchorIds = !person && anchorPerson ? [anchorPerson.id] : [];
+  const excludedParentIds = [...new Set([...directAnchorIds, ...descendantIds])];
   const submit = async (e) => {
     e.preventDefault();
     if (step === 1) return setStep(2);
@@ -3585,6 +3634,10 @@ function PersonModal({
                 }))}
                 anchorName={anchorPerson?.firstName || ""}
                 allowAnchorCoParent={!person && selectedRelation?.type === "parent" && selectedRelation?.direction === "to-anchor"}
+                allowNewPeople={Boolean(person?.canEdit)}
+                subjectName={person?.firstName || form.firstName.trim() || "this new person"}
+                excludedParentIds={excludedParentIds}
+                excludedPartnerIds={directAnchorIds}
                 disabled={false}
               />
             </div>
@@ -4228,13 +4281,17 @@ function FamilyApp({ session }) {
 
     if (existing) {
       if (existing.isPlaceholder) details.fill_placeholder = true;
-      const memberResult = await supabase.rpc("edit_family_member", {
+      const hasNewPartners = connections.partners.some((partner) => partner.new_person);
+      const editArgs = {
         p_member_id: existing.id,
         p_expected_revision: existing.revision || 1,
         p_expected_relationship_hash: existing.relationshipHash,
         p_details: details,
         p_connections: connections,
-      });
+      };
+      const memberResult = hasNewPartners
+        ? await supabase.rpc("edit_family_member_with_new_partners", editArgs)
+        : await supabase.rpc("edit_family_member", editArgs);
       if (memberResult.error) throw memberResult.error;
       await refreshFamilyData();
       return { updated: true };

@@ -51,6 +51,27 @@ test("represents placeholders inside the atomic connection bundle", () => {
   });
 });
 
+test("serializes a new named partner for atomic creation", () => {
+  const bundle = connectionBundleFromForm({
+    firstName: "Asha",
+    parentLinks: [],
+    partnerLinks: [{
+      mode: "new",
+      type: "spouse",
+      variant: "current",
+      newPerson: { firstName: "Dev", surname: "Advani", nickname: "D", maidenName: "", gender: "male", birthDate: "1970-02-03" },
+    }],
+  });
+  assert.deepEqual(bundle.partners[0].new_person, {
+    first_name: "Dev",
+    surname: "Advani",
+    nickname: "D",
+    maiden_name: null,
+    gender: "male",
+    birth_date: "1970-02-03",
+  });
+});
+
 test("normalizes unspecified parent variants to SQL null in every payload helper", () => {
   const bundle = connectionBundleFromForm({
     firstName: "Asha",
@@ -75,6 +96,22 @@ test("excludes a child primary edge duplicated by suggested parent links", () =>
         { mode: "existing", personId: "anchor", variant: "biological" },
         { mode: "existing", personId: "co-parent", variant: "biological" },
       ],
+      partnerLinks: [],
+    },
+    null,
+    [],
+    primary,
+  );
+  assert.deepEqual(bundle.parents.map((parent) => parent.person_id), ["co-parent"]);
+});
+
+test("a direct parent anchor is not repeated in the additional parent bundle", () => {
+  const primary = { type: "parent", direction: "from-anchor", variant: "biological" };
+  const bundle = connectionBundleFromForm(
+    {
+      firstName: "Asha",
+      anchorId: "anchor",
+      parentLinks: [{ mode: "existing", personId: "co-parent", variant: "biological" }],
       partnerLinks: [],
     },
     null,

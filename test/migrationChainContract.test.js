@@ -109,7 +109,7 @@ test("migration filenames have unique sortable timestamps", () => {
   assert.ok(names.every((name) => /^\d{14}_[a-z0-9_]+\.sql$/.test(name)));
   const timestamps = names.map((name) => name.slice(0, 14)).toSorted();
   assert.equal(new Set(timestamps).size, timestamps.length);
-  assert.equal(timestamps.at(-1), "20260922080805");
+  assert.equal(timestamps.at(-1), "20260922110420");
 });
 
 test("voice family import is atomic, graph-locked, idempotent, and RPC-only", () => {

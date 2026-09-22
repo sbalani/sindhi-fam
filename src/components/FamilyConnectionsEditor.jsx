@@ -2,6 +2,16 @@ import { Plus, Trash2, UsersRound } from "lucide-react";
 import { ensureTwoParentRows, makeEmptyParentLink } from "../utils/familyEditing.js";
 
 const PLACEHOLDER = "__placeholder__";
+const NEW_PERSON = "__new_person__";
+
+const emptyNewPerson = () => ({
+  firstName: "",
+  surname: "",
+  nickname: "",
+  maidenName: "",
+  gender: "unspecified",
+  birthDate: "",
+});
 
 const emptyPartner = () => ({
   key: crypto.randomUUID(),
@@ -16,7 +26,8 @@ const emptyPartner = () => ({
   provenanceNote: "",
   placeholderLabel: "",
   placeholderGender: "unspecified",
-  alsoParentOfAnchor: false,
+    alsoParentOfAnchor: false,
+    newPerson: emptyNewPerson(),
 });
 
 export default function FamilyConnectionsEditor({
@@ -29,8 +40,14 @@ export default function FamilyConnectionsEditor({
   anchorName = "",
   allowAnchorCoParent = false,
   disabled = false,
+  allowNewPeople = false,
+  subjectName = "this person",
+  excludedParentIds = [],
+  excludedPartnerIds = [],
 }) {
   const candidatePeople = people.filter((person) => person.id !== currentPersonId);
+  const parentCandidates = candidatePeople.filter((person) => !excludedParentIds.includes(person.id));
+  const partnerCandidates = candidatePeople.filter((person) => !excludedPartnerIds.includes(person.id));
 
   const updateParent = (key, changes) =>
     setParentLinks((rows) => rows.map((row) => (row.key === key ? { ...row, ...changes } : row)));
@@ -44,9 +61,9 @@ export default function FamilyConnectionsEditor({
   return (
     <div className="family-context-editor wide">
       <fieldset className="family-context-group">
-        <legend><UsersRound size={15} /> Parents</legend>
+        <legend><UsersRound size={15} /> Parents of {subjectName}</legend>
         <p>
-          Select an existing person when they are already in this family graph, or create a placeholder now and fill in their details later from the tree. Two rows are shown by default, but Vansh supports more than two parents.
+          Optional. These are {subjectName}&apos;s own parents, not the person selected in “directly related to” above. That direct relationship is saved automatically, so do not repeat it here.
         </p>
         <div className="family-link-list">
           {parentLinks.map((link, index) => (
@@ -65,7 +82,7 @@ export default function FamilyConnectionsEditor({
                   }}
                 >
                   <option value="">Choose an existing person…</option>
-                  {candidatePeople.map((person) => (
+                  {parentCandidates.map((person) => (
                     <option value={person.id} key={person.id}>{person.name}</option>
                   ))}
                   <option value={PLACEHOLDER}>Create placeholder parent…</option>
@@ -169,19 +186,21 @@ export default function FamilyConnectionsEditor({
                 {link.type === "partner" ? "Partner" : "Spouse"} {index + 1}
                 <select
                   disabled={disabled}
-                  value={link.mode === "placeholder" ? PLACEHOLDER : link.personId || ""}
+                  value={link.mode === "placeholder" ? PLACEHOLDER : link.mode === "new" ? NEW_PERSON : link.personId || ""}
                   onChange={(event) => {
                     const value = event.target.value;
                     updatePartner(link.key, {
-                      mode: value === PLACEHOLDER ? "placeholder" : "existing",
-                      personId: value === PLACEHOLDER ? "" : value,
+                      mode: value === PLACEHOLDER ? "placeholder" : value === NEW_PERSON ? "new" : "existing",
+                      personId: [PLACEHOLDER, NEW_PERSON].includes(value) ? "" : value,
+                      newPerson: link.newPerson || emptyNewPerson(),
                     });
                   }}
                 >
                   <option value="">Choose an existing person…</option>
-                  {candidatePeople.map((person) => (
+                  {partnerCandidates.map((person) => (
                     <option value={person.id} key={person.id}>{person.name}</option>
                   ))}
+                  {allowNewPeople && <option value={NEW_PERSON}>Create a new person with details…</option>}
                   <option value={PLACEHOLDER}>Create placeholder spouse / partner…</option>
                 </select>
               </label>
@@ -282,6 +301,17 @@ export default function FamilyConnectionsEditor({
                     </select>
                   </label>
                 </>
+              )}
+              {link.mode === "new" && (
+                <div className="new-connected-person-fields">
+                  <strong>New person details</strong>
+                  <label>First name<input required maxLength={100} disabled={disabled} value={link.newPerson?.firstName || ""} onChange={(event) => updatePartner(link.key, { newPerson: { ...link.newPerson, firstName: event.target.value } })} /></label>
+                  <label>Surname<input required maxLength={100} disabled={disabled} value={link.newPerson?.surname || ""} onChange={(event) => updatePartner(link.key, { newPerson: { ...link.newPerson, surname: event.target.value } })} /></label>
+                  <label>Nickname <small>Optional</small><input maxLength={100} disabled={disabled} value={link.newPerson?.nickname || ""} onChange={(event) => updatePartner(link.key, { newPerson: { ...link.newPerson, nickname: event.target.value } })} /></label>
+                  <label>Maiden / earlier surname <small>Optional</small><input maxLength={160} disabled={disabled} value={link.newPerson?.maidenName || ""} onChange={(event) => updatePartner(link.key, { newPerson: { ...link.newPerson, maidenName: event.target.value } })} /></label>
+                  <label>Gender wording<select disabled={disabled} value={link.newPerson?.gender || "unspecified"} onChange={(event) => updatePartner(link.key, { newPerson: { ...link.newPerson, gender: event.target.value } })}><option value="unspecified">Not specified</option><option value="female">Female</option><option value="male">Male</option><option value="nonbinary">Non-binary</option></select></label>
+                  <label>Date of birth <small>Optional</small><input type="date" min="1800-01-01" max={new Date().toISOString().slice(0, 10)} disabled={disabled} value={link.newPerson?.birthDate || ""} onChange={(event) => updatePartner(link.key, { newPerson: { ...link.newPerson, birthDate: event.target.value } })} /></label>
+                </div>
               )}
               {allowAnchorCoParent && (
                 <label className="inline-check co-parent-choice">

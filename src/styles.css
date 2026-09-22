@@ -1713,6 +1713,21 @@ header {
 }
 .family-context-suggestion svg { flex: none; color: #35665c; }
 .family-context-suggestion strong { display: block; color: #28534a; }
+.new-connected-person-fields {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+  padding: 12px;
+  border: 1px solid #c8dad4;
+  border-radius: 9px;
+  background: #f2f7f5;
+}
+.new-connected-person-fields > strong { grid-column: 1 / -1; color: #28534a; font-size: 11px; }
+@media (max-width: 700px) {
+  .new-connected-person-fields { grid-template-columns: 1fr; }
+  .new-connected-person-fields > strong { grid-column: auto; }
+}
 .traditional-connectors {
   position: absolute;
   inset: 0;
@@ -2826,6 +2841,8 @@ header {
 .relationship-path-summary { grid-column: 1 / -1; display: grid; gap: 2px; padding-top: 9px; border-top: 1px solid var(--border); }
 .relationship-path-summary span { color: var(--muted); font-size: 12px; }
 .tree-pan-viewport { overflow: auto; overscroll-behavior: contain; max-width: 100%; }
+.tree-pan-viewport.middle-panning { cursor: grabbing; user-select: none; }
+.tree-pan-viewport.middle-panning * { pointer-events: none; }
 .network-pan-viewport { max-height: 70vh; border-radius: 12px; }
 .network-pan-viewport .family-map { width: 100%; min-width: 760px; min-height: 600px; }
 .friend-code-grid {

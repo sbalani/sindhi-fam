@@ -76,7 +76,18 @@ const connectionPerson = (link, fallbackLabel) =>
           gender: link.placeholderGender || "unspecified",
         },
       }
-    : { person_id: link.personId };
+    : link.mode === "new"
+      ? {
+          new_person: {
+            first_name: link.newPerson?.firstName?.trim(),
+            surname: link.newPerson?.surname?.trim(),
+            nickname: link.newPerson?.nickname?.trim() || null,
+            maiden_name: link.newPerson?.maidenName?.trim() || null,
+            gender: link.newPerson?.gender || "unspecified",
+            birth_date: link.newPerson?.birthDate || null,
+          },
+        }
+      : { person_id: link.personId };
 
 const relationshipVariant = (type, value) =>
   type === "parent" && (!value || value === "unspecified") ? null : value || null;
@@ -100,8 +111,11 @@ export function connectionBundleFromForm(form, member, relationships, primary = 
       provenance_note: link.provenanceNote?.trim() || null,
     }));
   const partners = (form.partnerLinks || [])
-    .filter((link) => link.mode === "placeholder" || link.personId)
+    .filter((link) => link.mode === "placeholder" || link.mode === "new" || link.personId)
     .map((link) => {
+      if (link.mode === "new" && (!link.newPerson?.firstName?.trim() || !link.newPerson?.surname?.trim())) {
+        throw new Error("A new spouse or partner needs a first name and surname.");
+      }
       const startYear = relationshipYear(link.startYear, "Partnership start year");
       const endYear = relationshipYear(link.endYear, "Partnership end year");
       if (startYear && endYear && startYear > endYear) {
