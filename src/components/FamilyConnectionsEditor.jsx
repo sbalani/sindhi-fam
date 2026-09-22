@@ -1,5 +1,9 @@
 import { Plus, Trash2, UsersRound } from "lucide-react";
-import { ensureTwoParentRows, makeEmptyParentLink } from "../utils/familyEditing.js";
+import {
+  ensureTwoParentRows,
+  makeEmptyChildLink,
+  makeEmptyParentLink,
+} from "../utils/familyEditing.js";
 
 const PLACEHOLDER = "__placeholder__";
 const NEW_PERSON = "__new_person__";
@@ -26,8 +30,8 @@ const emptyPartner = () => ({
   provenanceNote: "",
   placeholderLabel: "",
   placeholderGender: "unspecified",
-    alsoParentOfAnchor: false,
-    newPerson: emptyNewPerson(),
+  alsoParentOfAnchor: false,
+  newPerson: emptyNewPerson(),
 });
 
 export default function FamilyConnectionsEditor({
@@ -35,6 +39,8 @@ export default function FamilyConnectionsEditor({
   currentPersonId,
   parentLinks,
   setParentLinks,
+  childLinks = null,
+  setChildLinks = null,
   partnerLinks,
   setPartnerLinks,
   anchorName = "",
@@ -53,6 +59,10 @@ export default function FamilyConnectionsEditor({
     setParentLinks((rows) => rows.map((row) => (row.key === key ? { ...row, ...changes } : row)));
   const removeParent = (key) =>
     setParentLinks((rows) => ensureTwoParentRows(rows.filter((row) => row.key !== key)));
+  const updateChild = (key, changes) =>
+    setChildLinks?.((rows) => rows.map((row) => (row.key === key ? { ...row, ...changes } : row)));
+  const removeChild = (key) =>
+    setChildLinks?.((rows) => rows.filter((row) => row.key !== key));
   const updatePartner = (key, changes) =>
     setPartnerLinks((rows) => rows.map((row) => (row.key === key ? { ...row, ...changes } : row)));
   const removePartner = (key) =>
@@ -63,7 +73,7 @@ export default function FamilyConnectionsEditor({
       <fieldset className="family-context-group">
         <legend><UsersRound size={15} /> Parents of {subjectName}</legend>
         <p>
-          Optional. These are {subjectName}&apos;s own parents, not the person selected in “directly related to” above. That direct relationship is saved automatically, so do not repeat it here.
+          Optional. Choose the people who are parents of {subjectName}. Shared parents let Vansh infer siblings without another relationship entry.
         </p>
         <div className="family-link-list">
           {parentLinks.map((link, index) => (
@@ -173,6 +183,90 @@ export default function FamilyConnectionsEditor({
           <Plus size={15} /> Add another parent
         </button>
       </fieldset>
+
+      {childLinks && setChildLinks && (
+        <fieldset className="family-context-group">
+          <legend>Children of {subjectName}</legend>
+          <p>Optional. Choose existing people for whom {subjectName} is a parent.</p>
+          <div className="family-link-list">
+            {childLinks.map((link, index) => (
+              <div className="family-link-row parent-link-row" key={link.key}>
+                <label>
+                  Child {index + 1}
+                  <select
+                    disabled={disabled}
+                    value={link.personId || ""}
+                    onChange={(event) => updateChild(link.key, { personId: event.target.value })}
+                  >
+                    <option value="">Choose an existing person…</option>
+                    {candidatePeople
+                      .filter((person) => person.id === link.personId || !childLinks.some((row) => row.personId === person.id))
+                      .map((person) => (
+                      <option value={person.id} key={person.id}>{person.name}</option>
+                      ))}
+                  </select>
+                </label>
+                <label>
+                  Parent type
+                  <select
+                    disabled={disabled}
+                    value={link.variant || "biological"}
+                    onChange={(event) => updateChild(link.key, { variant: event.target.value })}
+                  >
+                    <option value="biological">Biological</option>
+                    <option value="adoptive">Adoptive</option>
+                    <option value="step">Step-parent</option>
+                    <option value="guardian">Guardian / social parent</option>
+                    <option value="unspecified">Not specified</option>
+                  </select>
+                </label>
+                <label>
+                  Confidence
+                  <select
+                    disabled={disabled}
+                    value={link.confidence || "reported"}
+                    onChange={(event) => updateChild(link.key, { confidence: event.target.value })}
+                  >
+                    <option value="reported">Reported</option>
+                    <option value="probable">Probable</option>
+                    <option value="uncertain">Uncertain</option>
+                    <option value="documented">Documented</option>
+                    <option value="disputed">Disputed</option>
+                  </select>
+                </label>
+                <label>
+                  Relationship source <small>Optional</small>
+                  <input
+                    disabled={disabled}
+                    value={link.provenanceNote || ""}
+                    maxLength={1000}
+                    onChange={(event) => updateChild(link.key, { provenanceNote: event.target.value })}
+                    placeholder="e.g. family account or certificate"
+                  />
+                </label>
+                <button
+                  type="button"
+                  className="icon-danger family-link-remove"
+                  onClick={() => removeChild(link.key)}
+                  disabled={disabled}
+                  aria-label={`Remove child ${index + 1}`}
+                >
+                  <Trash2 size={15} />
+                </button>
+              </div>
+            ))}
+          </div>
+          {!childLinks.length && <small className="family-context-empty">No child selected.</small>}
+          <button
+            type="button"
+            className="quiet family-context-add"
+            disabled={disabled}
+            onClick={() => setChildLinks((rows) => [...rows, makeEmptyChildLink()])}
+          >
+            <Plus size={15} /> Add child
+          </button>
+        </fieldset>
+      )}
 
       <fieldset className="family-context-group">
         <legend>Spouses & partners</legend>

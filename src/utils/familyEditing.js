@@ -19,6 +19,16 @@ export const makeEmptyParentLink = () => ({
   placeholderGender: "unspecified",
 });
 
+export const makeEmptyChildLink = () => ({
+  key: crypto.randomUUID(),
+  relationshipId: null,
+  mode: "existing",
+  personId: "",
+  variant: "biological",
+  confidence: "reported",
+  provenanceNote: "",
+});
+
 export const ensureTwoParentRows = (links = []) => {
   const rows = links.map((link) => ({
     ...link,
@@ -110,6 +120,22 @@ export function connectionBundleFromForm(form, member, relationships, primary = 
       confidence: link.confidence || "reported",
       provenance_note: link.provenanceNote?.trim() || null,
     }));
+  const children = (form.childLinks || [])
+    .filter((link) => link.personId)
+    .filter(
+      (link) =>
+        !(
+          primary?.type === "parent" &&
+          primary.direction === "to-anchor" &&
+          link.personId === form.anchorId
+        ),
+    )
+    .map((link) => ({
+      person_id: link.personId,
+      variant: relationshipVariant("parent", link.variant),
+      confidence: link.confidence || "reported",
+      provenance_note: link.provenanceNote?.trim() || null,
+    }));
   const partners = (form.partnerLinks || [])
     .filter((link) => link.mode === "placeholder" || link.mode === "new" || link.personId)
     .map((link) => {
@@ -151,8 +177,17 @@ export function connectionBundleFromForm(form, member, relationships, primary = 
           provenance_note: relationship.provenanceNote || null,
         }))
     : [];
-  return { parents, partners, siblings };
+  return {
+    parents,
+    ...(member ? {} : { children }),
+    partners,
+    siblings,
+  };
 }
+
+export const hasExistingConnection = (connections) =>
+  [connections.parents, connections.children, connections.partners]
+    .some((links = []) => links.some((link) => Boolean(link.person_id)));
 
 export function primaryConnectionFromForm(form, relation) {
   const startYear = ["spouse", "partner"].includes(relation.type)

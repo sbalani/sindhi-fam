@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   connectionBundleFromForm,
   correctionSubmissionOutcome,
+  hasExistingConnection,
   primaryConnectionFromForm,
   correctionPayloadChanged,
   loadConnectionSnapshots,
@@ -25,6 +26,7 @@ test("normalizes qualifiers and canonical partnership status", () => {
   assert.equal(bundle.partners[0].status, "current");
   assert.equal(bundle.partners[0].start_year, 1970);
   assert.equal(bundle.siblings[0].variant, "half");
+  assert.equal("children" in bundle, false);
   assert.deepEqual(
     [bundle.parents[0].confidence, bundle.parents[0].provenance_note],
     ["documented", "Birth certificate"],
@@ -49,6 +51,27 @@ test("represents placeholders inside the atomic connection bundle", () => {
     label: "Unknown mother",
     gender: "female",
   });
+});
+
+test("serializes children and recognizes only existing-person graph connections", () => {
+  const bundle = connectionBundleFromForm({
+    firstName: "Asha",
+    parentLinks: [],
+    childLinks: [{ personId: "child", variant: "adoptive", confidence: "documented" }],
+    partnerLinks: [],
+  });
+  assert.deepEqual(bundle.children, [{
+    person_id: "child",
+    variant: "adoptive",
+    confidence: "documented",
+    provenance_note: null,
+  }]);
+  assert.equal(hasExistingConnection(bundle), true);
+  assert.equal(hasExistingConnection({
+    parents: [{ placeholder: { label: "Unknown parent" } }],
+    children: [],
+    partners: [],
+  }), false);
 });
 
 test("serializes a new named partner for atomic creation", () => {

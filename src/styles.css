@@ -3169,9 +3169,24 @@ textarea:focus-visible,
 .family-context-add { margin-top: 10px; }
 .family-context-empty { display: block; margin: 4px 0 10px; color: var(--muted); }
 .co-parent-choice { grid-column: 1 / -1; }
+.fallback-connection { margin-top: 14px; }
+.fallback-connection-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+}
+.fallback-connection-fields label {
+  display: grid;
+  gap: 5px;
+  font-size: 9px;
+  color: #72817d;
+}
+.fallback-connection-fields select,
+.fallback-connection-fields input { width: 100%; }
 
 @media (max-width: 700px) {
-  .family-link-row { grid-template-columns: 1fr; }
+  .family-link-row,
+  .fallback-connection-fields { grid-template-columns: 1fr; }
 }
 
 /* Real geographic family journey map */

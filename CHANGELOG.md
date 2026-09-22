@@ -1,5 +1,11 @@
 # Vansh changelog
 
+## 0.17.2 - Relationship-first family entry
+
+- Removed the mandatory direct-relative choice when adding a person.
+- Added parent, child and partner connections that place a person in the graph and infer relationships such as siblings.
+- Kept direct relationships as an optional fallback only when immediate family details are unknown.
+
 ## 0.17.1 - Clearer relationship editing and tree navigation
 
 - Added atomic creation of a fully named spouse or partner from an existing person's connection editor.

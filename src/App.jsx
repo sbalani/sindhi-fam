@@ -58,6 +58,7 @@ import {
   connectionBundleFromForm,
   correctionSubmissionOutcome,
   ensureTwoParentRows,
+  hasExistingConnection,
   loadConnectionSnapshots,
   parentLinksForMember,
   primaryConnectionFromForm,
@@ -74,7 +75,7 @@ const nav = [
   { id: "matches", label: "Connections", icon: Sparkles },
 ];
 
-const APP_VERSION = "0.17.1";
+const APP_VERSION = "0.17.2";
 
 const RELATION_OPTIONS = [
   {
@@ -3179,7 +3180,7 @@ function PersonModal({
     }
     return [];
   };
-  const initialRelation = draft?.relation || "father";
+  const initialRelation = draft?.relation || "";
   const initialAnchorId = draft?.anchorId || initialAnchor?.id || "";
   const initialSurnameSuggestions = surnameSuggestionsFor(
     initialAnchorId,
@@ -3219,6 +3220,7 @@ function PersonModal({
     provenanceNote: person?.provenanceNote || (draft?.statement ? `Voice-assisted draft: ${draft.statement}` : ""),
     privacyLevel: person?.privacyLevel || "family",
     parentLinks: ensureTwoParentRows(initialParentLinks),
+    childLinks: [],
     partnerLinks: initialPartnerLinks,
     marriageYear: "",
     relationshipEndYear: "",
@@ -3231,7 +3233,6 @@ function PersonModal({
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [duplicateCandidates, setDuplicateCandidates] = useState([]);
-  const [surnameTouched, setSurnameTouched] = useState(Boolean(person || draft?.surname));
   const update = (e) => setForm({ ...form, [e.target.name]: e.target.value });
   const addAlternateName = () =>
     setForm((current) => ({
@@ -3252,30 +3253,24 @@ function PersonModal({
     }));
   const updateRelation = (event) => {
     const relation = RELATION_OPTIONS.find((option) => option.value === event.target.value);
+    if (!relation) {
+      setForm((current) => ({
+        ...current,
+        relation: "",
+        ...relationSwitchValues(""),
+      }));
+      return;
+    }
     setForm((current) => ({
       ...current,
       relation: relation.value,
-      gender: relation.gender,
-      surname: surnameTouched
-        ? current.surname
-        : surnameSuggestionsFor(current.anchorId, relation.value, people, relationships)[0] || "",
-      parentLinks: ensureTwoParentRows(suggestedParentLinks(current.anchorId, relation.value)),
       ...relationSwitchValues(relation.type),
-    }));
-  };
-  const updateAnchor = (event) => {
-    const anchorId = event.target.value;
-    setForm((current) => ({
-      ...current,
-      anchorId,
-      surname: surnameTouched
-        ? current.surname
-        : surnameSuggestionsFor(anchorId, current.relation, people, relationships)[0] || "",
-      parentLinks: ensureTwoParentRows(suggestedParentLinks(anchorId, current.relation)),
     }));
   };
   const anchorPerson = people.find((item) => item.id === form.anchorId) || anchor;
   const selectedRelation = RELATION_OPTIONS.find((option) => option.value === form.relation);
+  const hasSelectedExistingConnection = [form.parentLinks, form.childLinks, form.partnerLinks]
+    .some((links = []) => links.some((link) => link.mode !== "placeholder" && Boolean(link.personId)));
   const surnameSuggestions = surnameSuggestionsFor(form.anchorId, form.relation, people, relationships);
   const contextOwnerId = person?.ownerId || anchorPerson?.ownerId;
   const contextPeople = people.filter((item) => !contextOwnerId || item.ownerId === contextOwnerId);
@@ -3294,8 +3289,7 @@ function PersonModal({
         });
     }
   }
-  const directAnchorIds = !person && anchorPerson ? [anchorPerson.id] : [];
-  const excludedParentIds = [...new Set([...directAnchorIds, ...descendantIds])];
+  const excludedParentIds = person ? [...descendantIds] : [];
   const submit = async (e) => {
     e.preventDefault();
     if (step === 1) return setStep(2);
@@ -3368,7 +3362,7 @@ function PersonModal({
               ? person.canSuggest
                 ? "This person has claimed their profile. Your changes will be sent to them for approval."
                 : "You control the identity details on this profile."
-              : "Choose a direct relationship to an existing person so Vansh can place them accurately."
+              : `Add what you know. Parents, children, or partners will connect this person to ${anchorPerson?.firstName || "your family"}; Vansh infers relationships such as siblings from the family graph.`
             : "Select locations from the city and country results. Typed search text is never saved."}
         </p>
         {step === 1 ? (
@@ -3391,10 +3385,7 @@ function PersonModal({
                   required
                   name="surname"
                   value={form.surname}
-                  onChange={(event) => {
-                    setSurnameTouched(true);
-                    update(event);
-                  }}
+                  onChange={update}
                   list="family-surname-suggestions"
                   placeholder="e.g. Vaswani"
                 />
@@ -3466,153 +3457,15 @@ function PersonModal({
                   <p className="alias-empty">Add names this person is also known by. These are searchable but the primary display name stays unchanged.</p>
                 )}
               </div>
-              {person ? (
-                <label>
-                  Gender wording <small>Optional</small>
-                  <select name="gender" value={form.gender} onChange={update}>
-                    <option value="unspecified">Not specified</option>
-                    <option value="female">Female</option>
-                    <option value="male">Male</option>
-                    <option value="nonbinary">Non-binary</option>
-                  </select>
-                </label>
-              ) : (
-                <>
-                  <label>
-                    Related directly to
-                    <select
-                      name="anchorId"
-                      value={form.anchorId}
-                      onChange={updateAnchor}
-                    >
-                      {people.map((item) => (
-                        <option value={item.id} key={item.id}>
-                          {item.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="wide">
-                    Their relationship to{" "}
-                    {anchorPerson?.firstName || "this person"}
-                    <select
-                      name="relation"
-                      value={form.relation}
-                      onChange={updateRelation}
-                    >
-                      {RELATION_OPTIONS.map((option) => (
-                        <option value={option.value} key={option.value}>
-                          {option.label}
-                          {option.term ? ` (${option.term})` : ""}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  {selectedRelation?.type === "parent" && (
-                    <label className="wide">
-                      Parent relationship type
-                      <select
-                        value={form.parentVariant}
-                        onChange={(event) =>
-                          setForm((current) => ({
-                            ...current,
-                            parentVariant: event.target.value,
-                          }))
-                        }
-                      >
-                        <option value="biological">Biological parent</option>
-                        <option value="adoptive">Adoptive parent</option>
-                        <option value="step">Step-parent</option>
-                        <option value="guardian">Guardian / social parent</option>
-                        <option value="unspecified">Not specified</option>
-                      </select>
-                    </label>
-                  )}
-                  <label>
-                    Relationship confidence
-                    <select
-                      value={form.relationshipConfidence}
-                      onChange={(event) => setForm((current) => ({
-                        ...current,
-                        relationshipConfidence: event.target.value,
-                      }))}
-                    >
-                      <option value="reported">Reported</option>
-                      <option value="probable">Probable</option>
-                      <option value="uncertain">Uncertain</option>
-                      <option value="documented">Documented</option>
-                      <option value="disputed">Disputed</option>
-                    </select>
-                  </label>
-                  <label className="wide">
-                    Relationship source <small>Optional</small>
-                    <input
-                      value={form.relationshipProvenanceNote}
-                      maxLength={1000}
-                      onChange={(event) => setForm((current) => ({
-                        ...current,
-                        relationshipProvenanceNote: event.target.value,
-                      }))}
-                    />
-                  </label>
-                  {["spouse", "partner"].includes(selectedRelation?.type) && (
-                    <label className="wide">
-                      Year{" "}
-                      {selectedRelation.type === "spouse"
-                        ? "married"
-                        : "partnership began"}{" "}
-                      <small>Optional</small>
-                      <input
-                        inputMode="numeric"
-                        value={form.marriageYear}
-                        onChange={(event) =>
-                          setForm((current) => ({
-                            ...current,
-                            marriageYear: event.target.value,
-                          }))
-                        }
-                        placeholder="e.g. 1968"
-                      />
-                    </label>
-                  )}
-                  {["spouse", "partner"].includes(selectedRelation?.type) && (
-                    <label className="wide">
-                      {selectedRelation.type === "spouse" ? "Divorce / end year" : "Partnership end year"} <small>Optional</small>
-                      <input
-                        inputMode="numeric"
-                        maxLength={4}
-                        value={form.relationshipEndYear}
-                        onChange={(event) =>
-                          setForm((current) => ({
-                            ...current,
-                            relationshipEndYear: event.target.value,
-                            partnershipVariant: event.target.value ? "former" : current.partnershipVariant,
-                          }))
-                        }
-                        placeholder="e.g. 1984"
-                      />
-                    </label>
-                  )}
-                  {["spouse", "partner"].includes(selectedRelation?.type) && (
-                    <label className="wide">
-                      Relationship status
-                      <select
-                        value={form.partnershipVariant}
-                        onChange={(event) =>
-                          setForm((current) => ({
-                            ...current,
-                            partnershipVariant: event.target.value,
-                          }))
-                        }
-                      >
-                        <option value="current">Current</option>
-                        <option value="former">Former</option>
-                        <option value="unspecified">Not specified</option>
-                      </select>
-                    </label>
-                  )}
-                </>
-              )}
+              <label>
+                Gender wording <small>Optional</small>
+                <select name="gender" value={form.gender} onChange={update}>
+                  <option value="unspecified">Not specified</option>
+                  <option value="female">Female</option>
+                  <option value="male">Male</option>
+                  <option value="nonbinary">Non-binary</option>
+                </select>
+              </label>
               {parentsSuggestedFromSibling && (
                 <div className="family-context-suggestion wide">
                   <GitFork size={16} />
@@ -3627,32 +3480,100 @@ function PersonModal({
                   ...current,
                   parentLinks: typeof updater === "function" ? updater(current.parentLinks) : updater,
                 }))}
+                childLinks={person ? null : form.childLinks}
+                setChildLinks={person ? null : (updater) => setForm((current) => ({
+                  ...current,
+                  childLinks: typeof updater === "function" ? updater(current.childLinks) : updater,
+                }))}
                 partnerLinks={form.partnerLinks}
                 setPartnerLinks={(updater) => setForm((current) => ({
                   ...current,
                   partnerLinks: typeof updater === "function" ? updater(current.partnerLinks) : updater,
                 }))}
                 anchorName={anchorPerson?.firstName || ""}
-                allowAnchorCoParent={!person && selectedRelation?.type === "parent" && selectedRelation?.direction === "to-anchor"}
                 allowNewPeople={Boolean(person?.canEdit)}
                 subjectName={person?.firstName || form.firstName.trim() || "this new person"}
                 excludedParentIds={excludedParentIds}
-                excludedPartnerIds={directAnchorIds}
                 disabled={false}
               />
+              {!person && !hasSelectedExistingConnection && (
+                <fieldset className="family-context-group wide fallback-connection">
+                  <legend>Connection when family details are unknown</legend>
+                  <p>
+                    Optional. Use this only when you cannot connect {form.firstName.trim() || "this person"} through a known parent, child, or partner.
+                  </p>
+                  <div className="fallback-connection-fields">
+                    <label>
+                      Direct relationship to {anchorPerson?.firstName || "the person you started from"}
+                      <select name="relation" value={form.relation} onChange={updateRelation}>
+                        <option value="">No additional relationship</option>
+                        {RELATION_OPTIONS.map((option) => (
+                          <option value={option.value} key={option.value}>
+                            {option.label}{option.term ? ` (${option.term})` : ""}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    {selectedRelation?.type === "parent" && (
+                      <label>
+                        Parent relationship type
+                        <select value={form.parentVariant} onChange={(event) => setForm((current) => ({ ...current, parentVariant: event.target.value }))}>
+                          <option value="biological">Biological parent</option>
+                          <option value="adoptive">Adoptive parent</option>
+                          <option value="step">Step-parent</option>
+                          <option value="guardian">Guardian / social parent</option>
+                          <option value="unspecified">Not specified</option>
+                        </select>
+                      </label>
+                    )}
+                    {selectedRelation && (
+                      <>
+                        <label>
+                          Confidence
+                          <select value={form.relationshipConfidence} onChange={(event) => setForm((current) => ({ ...current, relationshipConfidence: event.target.value }))}>
+                            <option value="reported">Reported</option>
+                            <option value="probable">Probable</option>
+                            <option value="uncertain">Uncertain</option>
+                            <option value="documented">Documented</option>
+                            <option value="disputed">Disputed</option>
+                          </select>
+                        </label>
+                        <label>
+                          Relationship source <small>Optional</small>
+                          <input value={form.relationshipProvenanceNote} maxLength={1000} onChange={(event) => setForm((current) => ({ ...current, relationshipProvenanceNote: event.target.value }))} />
+                        </label>
+                      </>
+                    )}
+                    {["spouse", "partner"].includes(selectedRelation?.type) && (
+                      <>
+                        <label>
+                          {selectedRelation.type === "spouse" ? "Year married" : "Year partnership began"} <small>Optional</small>
+                          <input inputMode="numeric" maxLength={4} value={form.marriageYear} onChange={(event) => setForm((current) => ({ ...current, marriageYear: event.target.value }))} />
+                        </label>
+                        <label>
+                          {selectedRelation.type === "spouse" ? "Divorce / end year" : "Partnership end year"} <small>Optional</small>
+                          <input inputMode="numeric" maxLength={4} value={form.relationshipEndYear} onChange={(event) => setForm((current) => ({ ...current, relationshipEndYear: event.target.value, partnershipVariant: event.target.value ? "former" : current.partnershipVariant }))} />
+                        </label>
+                        <label>
+                          Status
+                          <select value={form.partnershipVariant} onChange={(event) => setForm((current) => ({ ...current, partnershipVariant: event.target.value }))}>
+                            <option value="current">Current</option>
+                            <option value="former">Former</option>
+                            <option value="unspecified">Not specified</option>
+                          </select>
+                        </label>
+                      </>
+                    )}
+                  </div>
+                </fieldset>
+              )}
             </div>
             {!person && (
               <div className="kinship-tip">
                 <GitFork size={17} />
                 <span>
-                  <strong>
-                    {selectedRelation?.label}
-                    {selectedRelation?.term
-                      ? ` · ${selectedRelation.term}`
-                      : ""}
-                  </strong>
-                  For Chacha or Taya, add a Brother from your father’s node. For
-                  Dadi, add a Mother from your father’s node. You can add more than one parent of the same gender when the family structure requires it (for example biological, adoptive or step parents). For Chachi, add a Wife from your uncle’s node.
+                  <strong>Relationships are inferred from connections.</strong>
+                  If this person shares recorded parents with someone already in the tree, Vansh will recognize them as siblings. Use the optional direct relationship only when those family details are unknown.
                 </span>
               </div>
             )}
@@ -3774,10 +3695,11 @@ function PersonModal({
                 <button
                   type="button"
                   className="quiet"
-                  disabled={saving}
+                  disabled={saving || !candidate.canReuse}
                   onClick={() => resolveDuplicate(candidate.id)}
+                  title={candidate.canReuse ? "Use this managed record" : "This profile is managed by another family member"}
                 >
-                  Use existing
+                  {candidate.canReuse ? "Use existing" : "Managed by another relative"}
                 </button>
               </div>
             ))}
@@ -4216,10 +4138,11 @@ function FamilyApp({ session }) {
     const details = Object.fromEntries(
       Object.entries(payload).filter(([key]) => key !== "owner_id"),
     );
-    const relation = !existing
+    const hasFormConnection = [form.parentLinks, form.childLinks, form.partnerLinks]
+      .some((links = []) => links.some((link) => link.mode !== "placeholder" && Boolean(link.personId)));
+    const relation = !existing && !hasFormConnection
       ? RELATION_OPTIONS.find((option) => option.value === form.relation)
       : null;
-    if (!existing && !relation) throw new Error("Choose a relationship.");
     const primary = relation ? primaryConnectionFromForm(form, relation) : null;
     const connections = connectionBundleFromForm(
       form,
@@ -4227,6 +4150,11 @@ function FamilyApp({ session }) {
       relationships,
       primary,
     );
+    if (!existing && !primary && !hasExistingConnection(connections)) {
+      throw new Error(
+        "Choose at least one existing parent, child, or partner, or add the optional direct relationship.",
+      );
+    }
 
     // Claimed people control their profile and graph connections. Other
     // relatives submit one coherent proposal to the existing launch inbox.
@@ -4267,6 +4195,7 @@ function FamilyApp({ session }) {
             name: row.display_name,
             score: row.score,
             claimed: row.claimed,
+            canReuse: Boolean(people.find((person) => person.id === row.member_id)?.canEdit),
             details:
               [
                 row.birth_year && `Born ${row.birth_year}`,
@@ -4297,16 +4226,17 @@ function FamilyApp({ session }) {
       return { updated: true };
     }
 
-    const bundle = { primary, ...connections, anchor_id: anchorPerson.id };
+    const bundle = { fallback: primary, ...connections };
 
     if (options.useExistingId) {
       const duplicate = people.find(
         (person) =>
           person.id === options.useExistingId &&
-          person.ownerId === anchorPerson.ownerId,
+          person.ownerId === anchorPerson.ownerId &&
+          person.canEdit,
       );
       if (!duplicate)
-        throw new Error("That existing record is no longer available.");
+        throw new Error("That existing record is managed by another family member and cannot be reused here.");
       const linkResult = await supabase.rpc("link_family_members_bundle", {
         p_anchor_id: anchorPerson.id,
         p_member_id: duplicate.id,
