@@ -1,5 +1,12 @@
 # Vansh changelog
 
+## 0.17.4 - Clearer family paths
+
+- Reduced avoidable family-tree crossings and connector lengths by ordering generations in both directions.
+- Oriented couples toward their recorded parent branches and kept the reported family groups together.
+- Added direct-connection highlighting for pointer and keyboard focus.
+- Added deterministic family-unit colors across couples, children and later generations.
+
 ## 0.17.3 - Detailed relatives and cleaner family branches
 
 - Added atomic creation of detailed children with an optional recorded co-parent.

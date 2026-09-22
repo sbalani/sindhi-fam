@@ -1737,10 +1737,11 @@ header {
 }
 .traditional-connectors path {
   fill: none;
-  stroke: #9db3ad;
+  stroke: var(--family-color, #9db3ad);
   stroke-width: 2px;
   stroke-linejoin: round;
   vector-effect: non-scaling-stroke;
+  transition: opacity 140ms ease, stroke-width 140ms ease;
 }
 .traditional-generation {
   position: relative;
@@ -1788,11 +1789,13 @@ header {
   min-height: 118px;
   position: relative;
   border: 1px solid #d9d7d0;
+  border-top: 3px solid var(--family-color, #d9d7d0);
   border-radius: 10px;
   background: #fff;
   padding: 28px 10px 9px;
   text-align: center;
   box-shadow: 0 4px 12px #32473f0d;
+  transition: opacity 140ms ease, box-shadow 140ms ease, transform 140ms ease;
 }
 .traditional-person .avatar {
   position: absolute;
@@ -1866,7 +1869,11 @@ header {
   left: 100%;
   top: 39px;
   width: 28px;
-  border-top: 3px solid #c17b55;
+  border-top: 3px solid var(--family-color, #c17b55);
+}
+.traditional-person .couple-link.connection-highlight-link {
+  border-top-width: 5px;
+  filter: drop-shadow(0 1px 2px #173c3345);
 }
 .traditional-person.placeholder-person {
   border-style: dashed;
@@ -2632,7 +2639,7 @@ header {
 }
 .traditional-connectors path.partner-line {
   stroke-dasharray: 6 5;
-  stroke: #b08b7d;
+  stroke: var(--family-color, #b08b7d);
 }
 
 @media (max-width: 720px) {
@@ -2920,6 +2927,27 @@ header {
 .path-highlight { outline: 2px solid #d69e53; outline-offset: 3px; border-radius: 10px; }
 .family-map svg .path-highlight-line,
 .traditional-connectors .path-highlight-line { stroke: #d18d38 !important; stroke-width: 1.2 !important; }
+.traditional-person.connection-dimmed { opacity: .28; }
+.traditional-person.connection-origin,
+.traditional-person.connection-neighbor {
+  box-shadow: 0 7px 22px #173c332b;
+  box-shadow: 0 7px 22px color-mix(in srgb, var(--family-color, #4c8276) 28%, transparent);
+  transform: translateY(-2px);
+}
+.traditional-person.connection-origin { outline: 3px solid var(--family-color, #4c8276); outline-offset: 3px; }
+.traditional-person.connection-neighbor { outline: 2px solid var(--family-color, #4c8276); outline-offset: 2px; }
+.traditional-connectors .connection-highlight-line {
+  opacity: 1;
+  stroke-width: 4px !important;
+  filter: drop-shadow(0 1px 2px #173c3345);
+}
+.traditional-connectors .connection-dimmed-line { opacity: .12; }
+@media (prefers-reduced-motion: reduce) {
+  .traditional-person,
+  .traditional-connectors path { transition: none; }
+  .traditional-person.connection-origin,
+  .traditional-person.connection-neighbor { transform: none; }
+}
 .half-sibling-badge {
   display: inline-block !important;
   width: fit-content;

@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
   ArrowRight,
@@ -46,6 +46,7 @@ import useDialogAccessibility from "./hooks/useDialogAccessibility.js";
 import {
   buildTraditionalTreeLayout,
   assignParentConnectorLanes,
+  directConnectionIdsFor,
   deriveBranchLabel,
   parentIdsFor,
   parentConnectorLane,
@@ -1203,6 +1204,7 @@ function Tree({
   const [zoom, setZoom] = useState(1);
   const [generationFilter, setGenerationFilter] = useState("all");
   const [branchFilter, setBranchFilter] = useState("all");
+  const [hoveredPersonId, setHoveredPersonId] = useState("");
   const releaseVerticalWheel = (event) => {
     if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
     const viewport = event.currentTarget;
@@ -1262,53 +1264,62 @@ function Tree({
     ? people.find((person) => person.id === relationshipOriginId)
     : people.find((person) => person.isSelf) || people[0];
   const root = people.find((person) => person.id === focusId) || selfRoot;
-  const levels = root ? { [root.id]: 0 } : {};
-  for (let pass = 0; pass < people.length; pass += 1) {
-    relationships.forEach((relationship) => {
-      const fromLevel = levels[relationship.from];
-      const toLevel = levels[relationship.to];
-      const distance =
-        relationship.type === "grandparent"
-          ? 2
-          : relationship.type === "parent"
-            ? 1
-            : relationship.type === "child"
-              ? -1
-              : 0;
-      if (fromLevel !== undefined && toLevel === undefined)
-        levels[relationship.to] = fromLevel + distance;
-      if (toLevel !== undefined && fromLevel === undefined)
-        levels[relationship.from] = toLevel - distance;
+  const levels = useMemo(() => {
+    const nextLevels = root ? { [root.id]: 0 } : {};
+    for (let pass = 0; pass < people.length; pass += 1) {
+      relationships.forEach((relationship) => {
+        const fromLevel = nextLevels[relationship.from];
+        const toLevel = nextLevels[relationship.to];
+        const distance =
+          relationship.type === "grandparent"
+            ? 2
+            : relationship.type === "parent"
+              ? 1
+              : relationship.type === "child"
+                ? -1
+                : 0;
+        if (fromLevel !== undefined && toLevel === undefined)
+          nextLevels[relationship.to] = fromLevel + distance;
+        if (toLevel !== undefined && fromLevel === undefined)
+          nextLevels[relationship.from] = toLevel - distance;
+      });
+    }
+    people.forEach((person) => {
+      nextLevels[person.id] ??= 0;
     });
-  }
-  people.forEach((person) => {
-    levels[person.id] ??= 0;
-  });
-  const distances = root ? { [root.id]: 0 } : {};
-  for (let pass = 0; pass < people.length; pass += 1) {
-    relationships.forEach((relationship) => {
-      const fromDistance = distances[relationship.from];
-      const toDistance = distances[relationship.to];
-      if (fromDistance !== undefined && toDistance === undefined)
-        distances[relationship.to] = fromDistance + 1;
-      if (toDistance !== undefined && fromDistance === undefined)
-        distances[relationship.from] = toDistance + 1;
-    });
-  }
+    return nextLevels;
+  }, [people, relationships, root]);
+  const distances = useMemo(() => {
+    const nextDistances = root ? { [root.id]: 0 } : {};
+    for (let pass = 0; pass < people.length; pass += 1) {
+      relationships.forEach((relationship) => {
+        const fromDistance = nextDistances[relationship.from];
+        const toDistance = nextDistances[relationship.to];
+        if (fromDistance !== undefined && toDistance === undefined)
+          nextDistances[relationship.to] = fromDistance + 1;
+        if (toDistance !== undefined && fromDistance === undefined)
+          nextDistances[relationship.from] = toDistance + 1;
+      });
+    }
+    return nextDistances;
+  }, [people, relationships, root]);
   const maximumDistance =
     degreeLimit === "all" ? Infinity : Number(degreeLimit);
-  const branchForTree = (person) => deriveBranchLabel(person.id, selfRoot?.id, people, relationships);
-  const branchOptions = [...new Set(people.map(branchForTree))].filter(Boolean).sort();
-  const generationVisible = (person) => {
+  const branchLabels = useMemo(() => new Map(people.map((person) => [
+    person.id,
+    deriveBranchLabel(person.id, selfRoot?.id, people, relationships),
+  ])), [people, relationships, selfRoot?.id]);
+  const branchOptions = [...new Set(branchLabels.values())].filter(Boolean).sort();
+  const treePeople = useMemo(() => people.filter((person) => {
     const level = levels[person.id] ?? 0;
-    if (generationFilter === "ancestors") return level < 0;
-    if (generationFilter === "same") return level === 0;
-    if (generationFilter === "descendants") return level > 0;
-    return true;
-  };
-  const treePeople = people.filter((person) =>
-    (branchFilter === "all" || branchForTree(person) === branchFilter) && generationVisible(person),
-  );
+    const visibleByGeneration = generationFilter === "ancestors"
+      ? level < 0
+      : generationFilter === "same"
+        ? level === 0
+        : generationFilter === "descendants" ? level > 0 : true;
+    const branch = branchLabels.get(person.id);
+    return (branchFilter === "all" || branch === branchFilter) && visibleByGeneration;
+  }), [branchFilter, branchLabels, generationFilter, levels, people]);
   const networkPeople = treePeople.filter(
     (person) => (distances[person.id] ?? Infinity) <= maximumDistance,
   );
@@ -1355,8 +1366,14 @@ function Tree({
   const focusPathLabel = focusPath.length > 1
     ? focusPath.map((id) => peopleById.get(id)?.firstName || "Unknown").join(" → ")
     : root?.id === selfRoot?.id ? "This is you" : "No recorded path";
-  const { rows: traditionalRows, edges: traditionalEdges } =
-    buildTraditionalTreeLayout(treePeople, relationships, levels);
+  const { rows: traditionalRows, edges: traditionalEdges } = useMemo(
+    () => buildTraditionalTreeLayout(treePeople, relationships, levels),
+    [levels, relationships, treePeople],
+  );
+  const hoveredConnectionIds = useMemo(
+    () => hoveredPersonId ? directConnectionIdsFor(hoveredPersonId, relationships) : new Set(),
+    [hoveredPersonId, relationships],
+  );
   const traditionalEdgesJson = JSON.stringify(traditionalEdges);
   const generationLabel = (level) => {
     if (level === 0) return "Your generation";
@@ -1427,7 +1444,9 @@ function Tree({
                 kind: "partner",
                 from: edge.from,
                 to: edge.to,
-                pathKeys: edge.pathKeys,
+                 pathKeys: edge.pathKeys,
+                 connections: edge.connections,
+                 familyColor: edge.familyColor,
                 d: `M ${fromX} ${fromY} L ${toX} ${toY}`,
               },
             ];
@@ -1444,7 +1463,9 @@ function Tree({
               kind: "parent",
               from: edge.from,
               to: edge.to,
-              pathKeys: edge.pathKeys,
+               pathKeys: edge.pathKeys,
+               connections: edge.connections,
+               familyColor: edge.familyColor,
               d: `M ${fromX} ${fromY} V ${middleY} H ${toX} V ${toY}`,
             },
           ];
@@ -1468,7 +1489,7 @@ function Tree({
       window.removeEventListener("resize", updateLines);
     };
   }, [people, relationships, traditionalEdgesJson, view, zoom]);
-  const connectionLabels = (person) => {
+  const treePersonDetails = useMemo(() => new Map(people.map((person) => {
     const names = (ids) =>
       ids
         .map((id) => people.find((item) => item.id === id)?.firstName)
@@ -1504,7 +1525,7 @@ function Tree({
     const partnershipYear = partnerRelationships.find(
       (item) => item.startYear,
     )?.startYear;
-    return [
+    const labels = [
       parents.length ? `Child of ${names(parents)}` : null,
       partners.length
         ? `Partner of ${names(partners)}${partnershipYear ? ` · married ${partnershipYear}` : ""}`
@@ -1517,13 +1538,33 @@ function Tree({
         : null,
       children.length ? `Parent of ${names(children)}` : null,
     ].filter(Boolean);
-  };
-  const renderTreePerson = (person, index, unitLength) => {
-    const hasHalfSibling = siblingDetailsFor(person.id, relationships).some((item) => item.kind === "half");
+    return [person.id, {
+      labels,
+      hasHalfSibling: siblingDetails.some((item) => item.kind === "half"),
+    }];
+  })), [people, relationships]);
+  const renderTreePerson = (person, index, unit) => {
+    const personDetails = treePersonDetails.get(person.id);
+    const hasHalfSibling = personDetails?.hasHalfSibling;
+    const isConnectionOrigin = hoveredPersonId === person.id;
+    const isConnectionNeighbor = hoveredConnectionIds.has(person.id);
+    const isConnectionDimmed = hoveredPersonId && !isConnectionOrigin && !isConnectionNeighbor;
+    const partner = unit.members.find((member) => member.id !== person.id);
+    const isCoupleConnectionActive = Boolean(
+      partner && hoveredPersonId &&
+      unit.members.some((member) => member.id === hoveredPersonId) &&
+      hoveredConnectionIds.has(partner.id === hoveredPersonId ? person.id : partner.id),
+    );
     return (
     <div
-      className={`traditional-person ${person.isPlaceholder ? "placeholder-person" : ""} ${focusPath.includes(person.id) ? "path-highlight" : ""}`}
+      className={`traditional-person ${person.isPlaceholder ? "placeholder-person" : ""} ${focusPath.includes(person.id) ? "path-highlight" : ""} ${isConnectionOrigin ? "connection-origin" : ""} ${isConnectionNeighbor ? "connection-neighbor" : ""} ${isConnectionDimmed ? "connection-dimmed" : ""}`}
       key={person.id}
+      onPointerEnter={() => setHoveredPersonId(person.id)}
+      onPointerLeave={() => setHoveredPersonId("")}
+      onFocusCapture={() => setHoveredPersonId(person.id)}
+      onBlurCapture={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) setHoveredPersonId("");
+      }}
       ref={(element) => {
         if (element) traditionalPersonRefs.current.set(person.id, element);
         else traditionalPersonRefs.current.delete(person.id);
@@ -1533,7 +1574,7 @@ function Tree({
         type="button"
         className="tree-person-edit"
         onClick={() => !readOnly && editPerson?.(person)}
-        disabled={readOnly}
+        aria-disabled={readOnly}
         title={readOnly ? person.name : `Open ${person.name}'s profile`}
       >
         <Avatar person={person} />
@@ -1543,7 +1584,7 @@ function Tree({
         </strong>
         <span>{person.isPlaceholder ? "Details missing" : person.surname}</span>
         <div className="traditional-connections">
-          {connectionLabels(person).map((label) => (
+          {(personDetails?.labels || []).map((label) => (
             <small key={label}>{label}</small>
           ))}
         </div>
@@ -1564,7 +1605,9 @@ function Tree({
           ? Unknown siblings
         </button>
       )}
-      {index === 0 && unitLength === 2 && <i className="couple-link" />}
+      {index === 0 && unit.members.length === 2 && (
+        <i className={`couple-link ${isCoupleConnectionActive ? "connection-highlight-link" : ""}`} />
+      )}
     </div>
   );
   };
@@ -1572,6 +1615,7 @@ function Tree({
     <div
       className={`traditional-unit ${unit.members.length === 1 ? "single" : "couple"}`}
       key={unit.id}
+      style={{ "--family-color": unit.familyColor }}
       ref={(element) => {
         if (element) traditionalUnitRefs.current.set(unit.id, element);
         else traditionalUnitRefs.current.delete(unit.id);
@@ -1579,7 +1623,7 @@ function Tree({
     >
       <div className="traditional-couple">
         {unit.members.map((person, index) =>
-          renderTreePerson(person, index, unit.members.length),
+          renderTreePerson(person, index, unit),
         )}
       </div>
     </div>
@@ -1671,7 +1715,14 @@ function Tree({
               aria-hidden="true"
             >
               {traditionalLines.paths.map((path) => (
-                <path key={path.key} d={path.d} className={`${path.kind === "partner" ? "partner-line" : ""} ${path.pathKeys?.some((key) => focusPathPairs.has(key)) ? "path-highlight-line" : ""}`} />
+                <path
+                  key={path.key}
+                  d={path.d}
+                  style={{ "--family-color": path.familyColor }}
+                  data-relationship-ids={path.connections?.map((connection) => connection.id).join(" ")}
+                  data-person-ids={[...new Set(path.connections?.flatMap((connection) => connection.personIds) || [])].join(" ")}
+                  className={`${path.kind === "partner" ? "partner-line" : ""} ${path.pathKeys?.some((key) => focusPathPairs.has(key)) ? "path-highlight-line" : ""} ${hoveredPersonId && path.connections?.some((connection) => connection.personIds.includes(hoveredPersonId)) ? "connection-highlight-line" : ""} ${hoveredPersonId && !path.connections?.some((connection) => connection.personIds.includes(hoveredPersonId)) ? "connection-dimmed-line" : ""}`}
+                />
               ))}
             </svg>
             {traditionalRows.map((row) => (

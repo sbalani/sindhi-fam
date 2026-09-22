@@ -22,6 +22,76 @@ export const partnerIdsFor = (personId, relationships) =>
 const personSortKey = (person) =>
   `${person?.surname || ""}\u0000${person?.firstName || person?.name || ""}\u0000${person?.id || ""}`.toLocaleLowerCase();
 
+const familyColors = ["#4c8276", "#bd8d4c", "#766079", "#596987", "#bd7258", "#a86c77"];
+
+const familyColorIndex = (key) => {
+  let hash = 0;
+  for (const character of key) hash = (hash * 31 + character.charCodeAt(0)) >>> 0;
+  return hash % familyColors.length;
+};
+
+const familyColorFor = (key, avoid = "") => {
+  let index = familyColorIndex(key);
+  if (familyColors[index] === avoid) index = (index + 1) % familyColors.length;
+  return familyColors[index];
+};
+
+export const directConnectionIdsFor = (personId, relationships) => new Set(
+  relationships.flatMap((relationship) => {
+    if (relationship.from === personId) return [relationship.to];
+    if (relationship.to === personId) return [relationship.from];
+    return [];
+  }),
+);
+
+const rowPositions = (rows) => {
+  const positions = new Map();
+  rows.forEach((row) => {
+    let cursor = 0;
+    row.units.forEach((unit) => {
+      const width = unit.members.length === 2 ? 2.2 : 1;
+      positions.set(unit.id, cursor + width / 2);
+      cursor += width + 0.25;
+    });
+  });
+  return positions;
+};
+
+export const traditionalLayoutMetrics = (rows, edges) => {
+  const positions = rowPositions(rows);
+  const parentEdges = edges.filter((edge) => edge.kind === "parent");
+  let crossings = 0;
+  for (let leftIndex = 0; leftIndex < parentEdges.length; leftIndex += 1) {
+    const left = parentEdges[leftIndex];
+    for (let rightIndex = leftIndex + 1; rightIndex < parentEdges.length; rightIndex += 1) {
+      const right = parentEdges[rightIndex];
+      if (
+        left.fromLevel !== right.fromLevel ||
+        left.toLevel !== right.toLevel ||
+        left.from === right.from ||
+        left.to === right.to
+      ) continue;
+      const sourceOrder = positions.get(left.from) - positions.get(right.from);
+      const targetOrder = positions.get(left.to) - positions.get(right.to);
+      if (sourceOrder * targetOrder < 0) crossings += 1;
+    }
+  }
+  const span = parentEdges.reduce(
+    (total, edge) => total + Math.abs((positions.get(edge.from) || 0) - (positions.get(edge.to) || 0)),
+    0,
+  );
+  return { crossings, span };
+};
+
+const improvesLayout = (candidate, current) =>
+  candidate.crossings < current.crossings ||
+  (candidate.crossings === current.crossings && candidate.span < current.span - 0.001);
+
+const birthSortKey = (person) => {
+  const date = person?.birthDate || (person?.birthYear ? `${person.birthYear}-12-31` : "9999-12-31");
+  return `${date}\u0000${personSortKey(person)}`;
+};
+
 export const surnameSuggestionsFor = (anchorId, relationValue, people, relationships) => {
   const byId = new Map(people.map((person) => [person.id, person]));
   const anchor = byId.get(anchorId);
@@ -102,7 +172,7 @@ export const buildTraditionalTreeLayout = (people, relationships, levels = {}) =
     const members = [byId.get(relationship.from), byId.get(relationship.to)]
       .filter(Boolean)
       .sort((left, right) => personSortKey(left).localeCompare(personSortKey(right)));
-    const id = `couple:${members.map((person) => person.id).join(":")}`;
+    const id = `couple:${[relationship.from, relationship.to].sort().join(":")}`;
     const unit = { id, members, level: levels[members[0].id] ?? 0 };
     units.push(unit);
     members.forEach((person) => assignedUnit.set(person.id, id));
@@ -115,14 +185,24 @@ export const buildTraditionalTreeLayout = (people, relationships, levels = {}) =
       assignedUnit.set(person.id, person.id);
     });
 
-  const areSiblings = (personAId, personBId) =>
-    relationships.some((relationship) =>
-      relationship.type === "sibling" &&
-      ((relationship.from === personAId && relationship.to === personBId) ||
-        (relationship.from === personBId && relationship.to === personAId)),
-    ) || [...(displayParents.get(personAId) || [])].some((parentId) =>
-      displayParents.get(personBId)?.has(parentId),
-    );
+  const siblingIds = new Map(people.map((person) => [person.id, new Set()]));
+  relationships.forEach((relationship) => {
+    if (relationship.type !== "sibling") return;
+    siblingIds.get(relationship.from)?.add(relationship.to);
+    siblingIds.get(relationship.to)?.add(relationship.from);
+  });
+  const childrenByParent = new Map();
+  displayParents.forEach((parents, childId) => parents.forEach((parentId) => {
+    if (!childrenByParent.has(parentId)) childrenByParent.set(parentId, []);
+    childrenByParent.get(parentId).push(childId);
+  }));
+  childrenByParent.forEach((children) => children.forEach((personAId, index) => {
+    children.slice(index + 1).forEach((personBId) => {
+      siblingIds.get(personAId)?.add(personBId);
+      siblingIds.get(personBId)?.add(personAId);
+    });
+  }));
+  const areSiblings = (personAId, personBId) => siblingIds.get(personAId)?.has(personBId);
   const relatedTo = (unit, personId) => unit.members.some((member) => areSiblings(member.id, personId));
   const orderUnits = (generationUnits) => {
     const remaining = new Set(generationUnits.map((unit) => unit.id));
@@ -154,24 +234,138 @@ export const buildTraditionalTreeLayout = (people, relationships, levels = {}) =
   }, {}))
     .map(([level, generationUnits]) => ({ level: Number(level), units: orderUnits(generationUnits) }))
     .sort((left, right) => left.level - right.level);
-  rows.forEach((row, rowIndex) => {
-    if (rowIndex === 0) return;
-    const previousOrder = new Map(rows[rowIndex - 1].units.map((unit, index) => [unit.id, index]));
-    const originalOrder = new Map(row.units.map((unit, index) => [unit.id, index]));
-    const parentPosition = (unit) => {
-      const positions = unit.members.flatMap((member) =>
-        [...(displayParents.get(member.id) || [])]
-          .map((parentId) => previousOrder.get(assignedUnit.get(parentId)))
-          .filter((position) => position !== undefined),
-      );
-      return positions.length
-        ? positions.reduce((total, position) => total + position, 0) / positions.length
-        : Number.POSITIVE_INFINITY;
-    };
-    row.units.sort((left, right) =>
-      parentPosition(left) - parentPosition(right) || originalOrder.get(left.id) - originalOrder.get(right.id),
-    );
+  const unitById = new Map(units.map((unit) => [unit.id, unit]));
+  const parentLinks = [];
+  const parentLinkKeys = new Set();
+  units.forEach((childUnit) => {
+    childUnit.members.forEach((child) => {
+      displayParents.get(child.id)?.forEach((parentId) => {
+        const from = assignedUnit.get(parentId);
+        if (!from || from === childUnit.id) return;
+        const key = `${from}:${childUnit.id}`;
+        if (parentLinkKeys.has(key)) return;
+        parentLinkKeys.add(key);
+        parentLinks.push({
+          key: `parent:${key}`,
+          kind: "parent",
+          from,
+          to: childUnit.id,
+          fromLevel: unitById.get(from)?.level,
+          toLevel: childUnit.level,
+        });
+      });
+    });
   });
+  const scoreRows = () => traditionalLayoutMetrics(rows, parentLinks);
+  const restoreOrder = (row, order) => {
+    row.units.splice(0, row.units.length, ...order);
+  };
+  const sweepRow = (row, adjacentRow) => {
+    const before = [...row.units];
+    const currentPositions = rowPositions(rows);
+    const adjacentIds = new Set(adjacentRow.units.map((unit) => unit.id));
+    const stableOrder = new Map(before.map((unit, index) => [unit.id, index]));
+    const medianConnection = (unit) => {
+      const connected = parentLinks.flatMap((edge) => {
+        if (edge.from === unit.id && adjacentIds.has(edge.to)) return [currentPositions.get(edge.to)];
+        if (edge.to === unit.id && adjacentIds.has(edge.from)) return [currentPositions.get(edge.from)];
+        return [];
+      }).sort((left, right) => left - right);
+      if (!connected.length) return Number.POSITIVE_INFINITY;
+      const middle = Math.floor(connected.length / 2);
+      return connected.length % 2
+        ? connected[middle]
+        : (connected[middle - 1] + connected[middle]) / 2;
+    };
+    const currentScore = scoreRows();
+    row.units.sort((left, right) =>
+      medianConnection(left) - medianConnection(right) || stableOrder.get(left.id) - stableOrder.get(right.id),
+    );
+    if (!improvesLayout(scoreRows(), currentScore)) restoreOrder(row, before);
+  };
+  for (let pass = 0; pass < 4; pass += 1) {
+    for (let index = 1; index < rows.length; index += 1) sweepRow(rows[index], rows[index - 1]);
+    for (let index = rows.length - 2; index >= 0; index -= 1) sweepRow(rows[index], rows[index + 1]);
+  }
+  rows.forEach((row) => {
+    let currentScore = scoreRows();
+    for (let index = 0; index < row.units.length - 1; index += 1) {
+      [row.units[index], row.units[index + 1]] = [row.units[index + 1], row.units[index]];
+      const candidateScore = scoreRows();
+      if (improvesLayout(candidateScore, currentScore)) currentScore = candidateScore;
+      else {
+        [row.units[index], row.units[index + 1]] = [row.units[index + 1], row.units[index]];
+      }
+    }
+  });
+
+  const positions = rowPositions(rows);
+  const memberTargets = (unit, member) => relationships.flatMap((relationship) => {
+      if (relationship.from !== member.id && relationship.to !== member.id) return [];
+      const otherId = relationship.from === member.id ? relationship.to : relationship.from;
+      const otherUnit = assignedUnit.get(otherId);
+      if (!otherUnit || otherUnit === unit.id || !positions.has(otherUnit)) return [];
+      return [positions.get(otherUnit)];
+    });
+  const memberOrientationScore = (unit, members) => {
+    const targets = members.map((member) => memberTargets(unit, member));
+    const inversions = targets[0].reduce(
+      (total, leftTarget) => total + targets[1].filter((rightTarget) => leftTarget > rightTarget).length,
+      0,
+    );
+    const distance = members.reduce((total, member, index) => {
+      const memberX = positions.get(unit.id) + (index === 0 ? -0.28 : 0.28);
+      return total + targets[index].reduce((sum, target) => sum + Math.abs(memberX - target), 0);
+    }, 0);
+    return { inversions, distance };
+  };
+  units.filter((unit) => unit.members.length === 2).forEach((unit) => {
+    const reversed = [...unit.members].reverse();
+    const currentScore = memberOrientationScore(unit, unit.members);
+    const reversedScore = memberOrientationScore(unit, reversed);
+    if (
+      reversedScore.inversions < currentScore.inversions ||
+      (reversedScore.inversions === currentScore.inversions &&
+        reversedScore.distance < currentScore.distance - 0.001)
+    ) {
+      unit.members = reversed;
+    }
+  });
+
+  rows.forEach((row) => row.units.forEach((unit) => {
+    const incoming = parentLinks
+      .filter((edge) => edge.to === unit.id)
+      .map((edge) => unitById.get(edge.from))
+      .filter((parentUnit) => parentUnit?.familyColor)
+      .sort((left, right) => left.id.localeCompare(right.id));
+    const natalUnit = incoming[0];
+    if (!natalUnit) {
+      unit.familyColor = familyColorFor(unit.id);
+      return;
+    }
+    if (unit.members.length === 1) {
+      unit.familyColor = natalUnit.familyColor;
+      return;
+    }
+    const childUnits = parentLinks
+      .filter((edge) => edge.from === natalUnit.id)
+      .map((edge) => unitById.get(edge.to))
+      .filter(Boolean)
+      .sort((left, right) => {
+        const leftChild = left.members
+          .filter((member) => displayParents.get(member.id)?.has(natalUnit.members[0].id) ||
+            (natalUnit.members[1] && displayParents.get(member.id)?.has(natalUnit.members[1].id)))
+          .sort((a, b) => birthSortKey(a).localeCompare(birthSortKey(b)))[0] || left.members[0];
+        const rightChild = right.members
+          .filter((member) => displayParents.get(member.id)?.has(natalUnit.members[0].id) ||
+            (natalUnit.members[1] && displayParents.get(member.id)?.has(natalUnit.members[1].id)))
+          .sort((a, b) => birthSortKey(a).localeCompare(birthSortKey(b)))[0] || right.members[0];
+        return birthSortKey(leftChild).localeCompare(birthSortKey(rightChild));
+      });
+    unit.familyColor = childUnits[0]?.id === unit.id
+      ? natalUnit.familyColor
+      : familyColorFor(unit.id, natalUnit.familyColor);
+  }));
 
   const edges = [];
   const edgesByKey = new Map();
@@ -182,9 +376,18 @@ export const buildTraditionalTreeLayout = (people, relationships, levels = {}) =
         if (!parentUnitId || parentUnitId === childUnit.id) return;
         const key = `parent:${parentUnitId}:${childUnit.id}`;
         const pathKey = [parentId, child.id].sort().join(":");
+        const connections = relationships.filter((relationship) =>
+          (relationship.type === "parent" && relationship.from === parentId && relationship.to === child.id) ||
+          (relationship.type === "child" && relationship.from === child.id && relationship.to === parentId),
+        ).map((relationship) => ({
+          id: relationship.id || `${relationship.type}:${relationship.from}:${relationship.to}`,
+          personIds: [relationship.from, relationship.to],
+          type: relationship.type,
+        }));
         if (edgesByKey.has(key)) {
           const edge = edgesByKey.get(key);
           edge.pathKeys.push(pathKey);
+          edge.connections.push(...connections);
           if (edge.fromPersonId !== parentId) edge.fromPersonId = null;
           if (edge.toPersonId !== child.id) edge.toPersonId = null;
           return;
@@ -199,6 +402,8 @@ export const buildTraditionalTreeLayout = (people, relationships, levels = {}) =
           toPersonId: child.id,
           kind: "parent",
           pathKeys: [pathKey],
+          connections,
+          familyColor: unitById.get(parentUnitId)?.familyColor,
         };
         edges.push(edge);
         edgesByKey.set(key, edge);
@@ -212,8 +417,14 @@ export const buildTraditionalTreeLayout = (people, relationships, levels = {}) =
     const pair = [from, to].sort();
     const key = `partner:${pair[0]}:${pair[1]}`;
     const pathKey = [relationship.from, relationship.to].sort().join(":");
+    const connection = {
+      id: relationship.id || `${relationship.type}:${relationship.from}:${relationship.to}`,
+      personIds: [relationship.from, relationship.to],
+      type: relationship.type,
+    };
     if (edgesByKey.has(key)) {
       edgesByKey.get(key).pathKeys.push(pathKey);
+      edgesByKey.get(key).connections.push(connection);
       return;
     }
     const edge = {
@@ -224,6 +435,8 @@ export const buildTraditionalTreeLayout = (people, relationships, levels = {}) =
       toPersonId: relationship.to,
       kind: "partner",
       pathKeys: [pathKey],
+      connections: [connection],
+      familyColor: unitById.get(pair[0])?.familyColor,
     };
     edges.push(edge);
     edgesByKey.set(key, edge);
